@@ -1,5 +1,5 @@
 # Product Requirements Document
-> **Project Rice**
+> **Youtube Rice**
 >
 > *유튜브 인터랙티브 게임을 위한 엔진*
 ## 1. 문서 개요
