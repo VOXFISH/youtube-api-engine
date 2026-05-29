@@ -1,12 +1,21 @@
-#include "Debug.h"
+#include "Rice/Debug.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace Rice{
-    static std::shared_ptr<spdlog::logger> Debug::s_CoreLogger;
-    static std::shared_ptr<spdlog::logger> Debug::s_ClientLogger;
+    std::shared_ptr<spdlog::logger> Debug::s_CoreLogger;
+    std::shared_ptr<spdlog::logger> Debug::s_ClientLogger;
 
     void Debug::Init()
     {
+#ifdef _WIN32
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
+#endif
+
         spdlog::set_pattern("%^[%T] %n: %v%$");
         //start color range[Timestamp HH:MM:SS] Logger's Name: userText, end color range
 

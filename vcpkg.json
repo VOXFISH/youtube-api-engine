@@ -1,9 +1,11 @@
 {
     "name": "project-rice",
     "version-string": "0.0.0.0",
+    "builtin-baseline": "d015e31e90838a4c9dfa3eed45979bc70d9357fc",
     "dependencies": [
         "glfw3",
         "glm",
-        "glad"
+        "glad",
+        "spdlog"
     ]
 }

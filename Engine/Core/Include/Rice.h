@@ -6,5 +6,5 @@
 
 #ifdef RICE_ENABLE_ENTRY_POINT
     #include <iostream>
-    #include "Rice/Entrypoint.h"
+    #include "Rice/EntryPoint.h"
 #endif
