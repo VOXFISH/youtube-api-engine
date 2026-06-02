@@ -6,32 +6,9 @@
 			"label": "CMake: build",
 			"command": "build",
 			"targets": [
-				"[N/A - Select Kit]"
-			],
-			"group": "build",
-			"problemMatcher": [],
-			"detail": "CMake template build task"
-		},
-		{
-			"type": "cmake",
-			"label": "CMake: build",
-			"command": "build",
-			"targets": [
 				"all"
 			],
-			"preset": "build-windows-debug-local",
-			"group": "build",
-			"problemMatcher": [],
-			"detail": "CMake template build task"
-		},
-		{
-			"type": "cmake",
-			"label": "CMake: build",
-			"command": "build",
-			"targets": [
-				"all"
-			],
-			"preset": "build-windows-debug-local",
+			"preset": "build-windows-debug",
 			"group": "build",
 			"problemMatcher": [],
 			"detail": "CMake template build task"
@@ -43,46 +20,10 @@
 			"targets": [
 				"all"
 			],
-			"preset": "build-windows-debug-local",
+			"preset": "build-windows-debug",
 			"group": "build",
 			"problemMatcher": [],
 			"detail": "CMake template clean rebuild task"
-		},
-		{
-			"type": "cmake",
-			"label": "CMake: build",
-			"command": "build",
-			"targets": [
-				"all"
-			],
-			"preset": "build-windows-debug-local",
-			"group": "build",
-			"problemMatcher": [],
-			"detail": "CMake template build task"
-		},
-		{
-			"type": "cmake",
-			"label": "CMake: clean rebuild",
-			"command": "cleanRebuild",
-			"targets": [
-				"all"
-			],
-			"preset": "build-windows-debug-local",
-			"group": "build",
-			"problemMatcher": [],
-			"detail": "CMake template clean rebuild task"
-		},
-		{
-			"type": "cmake",
-			"label": "CMake: build",
-			"command": "build",
-			"targets": [
-				"all"
-			],
-			"preset": "build-windows-debug-local",
-			"group": "build",
-			"problemMatcher": [],
-			"detail": "CMake template build task"
 		}
 	]
 }

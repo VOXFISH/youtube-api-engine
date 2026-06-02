@@ -1,3 +1,4 @@
+#include "Rice/PreCompiledHeaders.h"
 #include "Rice/Debug.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 

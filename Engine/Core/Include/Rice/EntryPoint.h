@@ -1,5 +1,10 @@
 #pragma once
 
+namespace Rice {
+    class Application;
+    namespace Debug { void Init(); }
+    Application* CreateApplication();
+}
 #ifdef _WIN32
 
 extern Rice::Application* Rice::CreateApplication();

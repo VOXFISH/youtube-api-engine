@@ -11,9 +11,8 @@ target_sources(
         TYPE HEADERS
         BASE_DIRS Include
         FILES
-        include/Rice/Application.h
-        include/Rice/EntryPoint.h
-        include/Rice/Time.h
+        include/Rice/
+        include/Event/
 )
 
 target_include_directories(
