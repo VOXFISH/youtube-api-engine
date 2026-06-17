@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "Debug.h"
 #ifdef RICE_PLATFORM_WINDOWS
 #include <Windows.h>
 #endif

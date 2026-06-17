@@ -27,7 +27,7 @@ namespace Rice {
 
         std::string ToString() const {
             std::stringstream ss;
-            ss << "KeyPressedEvent: " << m_KeyCode << " (repeat = " << m_IsRepeat << ")";
+            ss << "KeyPressedEvent: " << KeyCodeToString(m_KeyCode) << " (repeat = " << m_IsRepeat << ")";
             return ss.str();
         }
 
@@ -37,17 +37,40 @@ namespace Rice {
         bool m_IsRepeat;
     };
 
-    class KeyTypedEvent : public KeyEvent{
+    class KeyTypedEvent : public Event
+    {
     public:
-        KeyTypedEvent(const KeyCode keycode)
-            : KeyEvent(keycode) {}
+        explicit KeyTypedEvent(const std::uint32_t codepoint)
+            : m_Codepoint(codepoint) {}
 
-        std::string ToString() const override{
+        std::uint32_t GetCodepoint() const { return m_Codepoint; }
+
+        std::string ToString() const override
+        {
             std::stringstream ss;
-            ss << "KeyTypedEvent: " << m_KeyCode;
+            ss << "KeyTypedEvent: U+" << std::hex << std::uppercase << m_Codepoint;
             return ss.str();
         }
 
         EVENT_CLASS_TYPE(KeyTyped)
-    }
+        EVENT_CLASS_CATEGORY(EventCategoryKeyboard | EventCategoryInput)
+
+    private:
+        std::uint32_t m_Codepoint;
+    };
+
+    class KeyReleasedEvent : public KeyEvent
+    {
+    public:
+        KeyReleasedEvent(const KeyCode keycode)
+            : KeyEvent(keycode) {}
+
+        std::string ToString() const override{
+            std::stringstream ss;
+            ss << "KeyReleasedEvent: " << KeyCodeToString(m_KeyCode);
+            return ss.str();
+        }
+
+        EVENT_CLASS_TYPE(KeyReleased)
+    };
 }

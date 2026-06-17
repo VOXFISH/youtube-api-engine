@@ -1,25 +1,27 @@
 #pragma once
 
+#include "Application.h"
+#include "Debug.h"
+
 namespace Rice {
-    class Application;
-    namespace Debug { void Init(); }
     Application* CreateApplication();
 }
-#ifdef _WIN32
 
-extern Rice::Application* Rice::CreateApplication();
+#ifdef _WIN32
 
 int main(int argc, char** argv)
 {
+    (void)argc;
+    (void)argv;
+
     Rice::Debug::Init();
-    RICE_CORE_FATAL("치명적인 테스트");
-    RICE_CORE_ERROR("조금 덜 치명적인 테스트");
-    RICE_CORE_WARNING("상당히 위험한 테스트");
+    RICE_CORE_INFO("Rice Engine Initiated.");
     RICE_LOG("Hell World!");
 
-    auto app = Rice::CreateApplication();
+    auto* app = Rice::CreateApplication();
     app->Run();
     delete app;
+    return 0;
 }
 
 #endif

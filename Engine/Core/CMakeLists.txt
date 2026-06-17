@@ -1,29 +1,50 @@
-add_library(RiceCore SHARED) # 동적 라이브러리로 선언 : 여러 개의 실행파일에서 한 번에 참고할 수 있음.
+add_library(RiceCore SHARED)
 
 target_sources(
     RiceCore
     PRIVATE
         Source/Application.cpp
         Source/Debug.cpp
+        Include/ImGui/ImGuiLayer.cpp
+        Source/Layer.cpp
+        Source/LayerStack.cpp
+        Source/PreCompiledheaders.cpp
         Source/Time.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS Include
         FILES
-        include/Rice/
-        include/Event/
+            Include/Rice.h
+            Include/Event/ApplicationEvent.h
+            Include/Event/Event.h
+            Include/Event/KeyCode.h
+            Include/Event/KeyEvent.h
+            Include/Event/MouseCode.h
+            Include/Event/MouseEvent.h
+            Include/Rice/Application.h
+            Include/Rice/Core.h
+            Include/Rice/Debug.h
+            Include/Rice/EntryPoint.h
+            Include/Rice/PreCompiledHeaders.h
+            Include/Rice/Time.h
+            Include/Rice/Window.h
+            Include/Rice/Layer.h
+            Include/Rice/LayerStack.h
+            Include/ImGui/ImGuiLayer.h
 )
 
 target_include_directories(
     RiceCore
     PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/Include
+        ${CMAKE_CURRENT_SOURCE_DIR}/Include
+        ${PROJECT_SOURCE_DIR}/Engine
 )
 
 target_compile_definitions(
     RiceCore
-    PRIVATE RICE_BUILD_DLL
+    PRIVATE
+        RICE_BUILD_DLL
 )
 
 set_target_properties(RiceCore PROPERTIES
@@ -31,22 +52,14 @@ set_target_properties(RiceCore PROPERTIES
     OUTPUT_NAME "RiceCore"
 )
 
-find_package(spdlog CONFIG REQUIRED)
-
 target_link_libraries(
     RiceCore
     PUBLIC
         spdlog::spdlog
-)
-
-#[[ find_package(glfw3 CONFIG REQUIRED)
-find_package(glm CONFIG REQUIRED)
-find_package(glad CONFIG REQUIRED)
-
-target_link_libraries(
-    RiceCore
-    PUBLIC
+        imgui::imgui
+    PRIVATE
+        RiceBuildOptions
+        glad::glad
         glfw
         glm::glm
-        glad::glad
-) ]]
+)

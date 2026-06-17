@@ -23,7 +23,7 @@ namespace Rice
         */
         AppTick, AppUpdate, AppFixedUpdate, AppLateUpdate, AppRender,
         //키보드 입력
-        KeyPressed, KeyReleased,
+        KeyPressed, KeyTyped, KeyReleased,
         //마우스 입력
         MouseButtonPressed, MouseButtonReleased, MouseMoved, MouseScrolled
     };
@@ -40,7 +40,7 @@ namespace Rice
 
     #define EVENT_CLASS_TYPE(type) static EventType GetStaticType() { return EventType::type; }\
                                     virtual EventType GetEventType() const override { return GetStaticType(); }\
-                                    virtual const char* Getname() const override { return #type; }
+                                    virtual const char* GetName() const override { return #type; }
 
     #define EVENT_CLASS_CATEGORY(category) virtual int GetCategoryFlags() const override { return category; }
 

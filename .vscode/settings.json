@@ -1,5 +1,6 @@
 {
   "cmake.configurePreset": "windows-debug",
   "cmake.buildPreset": "build-windows-debug",
-  "cmake.useVsDeveloperEnvironment": "always"
+  "cmake.useVsDeveloperEnvironment": "never",
+  "C_Cpp.errorSquiggles": "disabled"
 }

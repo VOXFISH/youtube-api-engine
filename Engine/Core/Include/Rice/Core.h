@@ -9,3 +9,13 @@
 #else
     #error other environments to be supported...
 #endif
+
+#ifdef RICE_ENABLE_ASSERTS //디버거 breakpoint를 설정
+    #define RICE_ASSERT(x, ...) {if(!(x)) { RICE_ERROR("Assertion Failed: {0}", __VA_ARGS__); __debugbreak();}}
+    #define RICE_CORE_ASSERT(x, ...) {if(!(x)){ RICE_ERROR("Assertion Failed: {0}", __VA_ARGS__); __debugbreak();}}
+#else
+    #define RICE_ASSERT(x, ...)
+    #define RICE_CORE_ASSERT(x, ...)
+#endif
+
+#define BIT(x) (1 << (x))
