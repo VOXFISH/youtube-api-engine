@@ -1,4 +1,4 @@
-add_library(RiceCore SHARED)
+add_library(RiceCore STATIC)
 
 target_sources(
     RiceCore
@@ -10,6 +10,7 @@ target_sources(
         Source/LayerStack.cpp
         Source/PreCompiledheaders.cpp
         Source/Time.cpp
+        ${PROJECT_SOURCE_DIR}/Engine/Dependencies/stb_image/StbImage.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -39,12 +40,13 @@ target_include_directories(
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
         ${PROJECT_SOURCE_DIR}/Engine
+        ${PROJECT_SOURCE_DIR}/Engine/Dependencies/stb_image
 )
 
 target_compile_definitions(
     RiceCore
-    PRIVATE
-        RICE_BUILD_DLL
+    PUBLIC
+        RICE_STATIC
 )
 
 set_target_properties(RiceCore PROPERTIES

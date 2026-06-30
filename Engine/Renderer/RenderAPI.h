@@ -14,8 +14,8 @@ namespace Rice
         void SetDepthTestEnabled(bool enabled);
         void SetLineWidth(float width);
         void Clear();
-        void SetClearColor(const glm::vec4& color);
-        void DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray);
-        void DrawLinesIndexed(const std::shared_ptr<VertexArray>& vertexArray);
+        void SetClearColor(const Vector4& color);
+        void DrawIndexed(const Ref<VertexArray>& vertexArray);
+        void DrawLinesIndexed(const Ref<VertexArray>& vertexArray);
     };
 }

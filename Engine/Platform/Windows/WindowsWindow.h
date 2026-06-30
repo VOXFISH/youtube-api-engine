@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Rice/Window.h"
 
@@ -28,7 +28,7 @@ namespace Rice
         virtual void Shutdown();
         GLFWwindow* m_Window;
 
-        struct WindowData //GLFW가 요청할 실제 데이터를 보관하는 영역
+        struct WindowData //GLFW ???? ??? ?? ?
         {
             std::string Title;
             unsigned int Width, Height;

@@ -1,7 +1,6 @@
 add_executable(RiceSandbox
+    Assets/SandboxCube.cpp
     Source/SandboxApp.cpp
-    Source/RainbowCube.h
-    Source/RainbowCube.cpp
 )
 
 target_link_libraries(RiceSandbox

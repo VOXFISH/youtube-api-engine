@@ -1,7 +1,9 @@
-#include "Rice/PreCompiledHeaders.h"
+﻿#include "Rice/PreCompiledHeaders.h"
 #include "Rice/Application.h"
 #include "Input/Input.h"
 #include "Renderer/RenderCommand.h"
+
+#include <GLFW/glfw3.h>
 
 #include <glm/glm.hpp>
 namespace Rice
@@ -13,15 +15,13 @@ namespace Rice
         RICE_CORE_ASSERT(!s_Instance, "Application already exists!");
         s_Instance = this;
 
-        m_Window = std::unique_ptr<Window>(Window::Create());
+        m_Window = Scope<Window>(Window::Create());
         /*
-        Window가 추상 클래스고, 추상 클래스는 객체를 생성할 수 없기 때문에
-        Window를 멤버 변수로 직접 두는 대신 포인터에 바인딩하고 실제 객체는 자식 클래스에서
-        m_Window = std::make_unique<WindowsWindow>();와 같이 생성한다.
-        이때 Window 타입의 포인터는 실제로는 WindowsWindow 객체를 가리킨다.
+        Window  ??,  ?? ??????? ???        Window? ?  ? ????? ??? ??? ????        m_Window = CreateScope<WindowsWindow>();?  ??.
+        ? Window ?? ?? ? WindowsWindow ???
         */
         m_Window->SetEventCallback(std::bind(&Application::OnEvent, this, std::placeholders::_1));
-        // lectures.md 참고.
+        // lectures.md .
     }
 
     Application::~Application()
@@ -70,16 +70,20 @@ namespace Rice
 
         while (m_Running)
         {
+            Time::Update((float)glfwGetTime());
+            deltaTime = Time(Time::deltaTime);
+
             m_Window->OnUpdate();
 
             RenderCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
             RenderCommand::Clear();
 
-            OnUpdate();
+            OnUpdate(deltaTime);
 
             for (Layer *layer : m_LayerStack)
             {
-                layer->OnUpdate();
+                layer->OnUpdate(deltaTime);
+                layer->OnImGuiRender();
             }
 
             OnRender();

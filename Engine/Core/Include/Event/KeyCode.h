@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <cstdint>
 
 namespace Rice
@@ -9,7 +9,7 @@ namespace Rice
     {
         enum : KeyCode
         {
-            //glfw3.h에서 가져옴
+            //glfw3.h? ?
             Space = 32,
             Apostrophe = 39,
             Comma = 44,

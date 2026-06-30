@@ -10,7 +10,7 @@ namespace Rice
         s_RenderAPI->SetViewport(x, y, width, height);
     }
 
-    void RenderCommand::SetClearColor(const glm::vec4& color)
+    void RenderCommand::SetClearColor(const Vector4& color)
     {
         s_RenderAPI->SetClearColor(color);
     }
@@ -30,12 +30,12 @@ namespace Rice
         s_RenderAPI->Clear();
     }
 
-    void RenderCommand::DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray)
+    void RenderCommand::DrawIndexed(const Ref<VertexArray>& vertexArray)
     {
         s_RenderAPI->DrawIndexed(vertexArray);
     }
 
-    void RenderCommand::DrawLinesIndexed(const std::shared_ptr<VertexArray>& vertexArray)
+    void RenderCommand::DrawLinesIndexed(const Ref<VertexArray>& vertexArray)
     {
         s_RenderAPI->DrawLinesIndexed(vertexArray);
     }

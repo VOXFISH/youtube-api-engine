@@ -159,3 +159,27 @@ std::unique_ptr<Window> b = a; // 오류
 | `unique_ptr` | 소유자가 하나       |
 | `shared_ptr` | 여러 곳이 공동 소유   |
 | `weak_ptr`   | 소유하지 않고 관찰만 함 |
+
+3. 스마트 포인터 활용
+C#에서 사용하던 전략 패턴을 사용해서 Camera가 projection 전략을 갖는다고 하자.
+```
+class CameraComponent
+{
+    public IProjectionModel Projection { get; set; }
+}
+```
+C#이나 Java라면 객체에 대한 참조를 들고 있고 GC가 메모리를 정리해주지만 C++은 그렇지 못함.
+```
+class CameraComponent
+{
+public:
+    std::unique_ptr<ProjectionModel> projection;
+};
+```
+다음과 같은 상황에서는 객체를 자동으로 정리해 줌.
+```
+std::unique_ptr<ProjectionModel> projection;
+
+projection = std::make_unique<PerspectiveProjection>();
+projection = std::make_unique<OrthographicProjection>();
+```

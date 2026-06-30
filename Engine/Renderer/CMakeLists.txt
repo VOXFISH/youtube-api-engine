@@ -3,6 +3,8 @@ target_sources(
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Shader.h
         ${CMAKE_CURRENT_SOURCE_DIR}/Shader.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Texture.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/Texture.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Buffer.h
         ${CMAKE_CURRENT_SOURCE_DIR}/Buffer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/RenderAPI.h
@@ -11,6 +13,11 @@ target_sources(
         ${CMAKE_CURRENT_SOURCE_DIR}/RenderCommand.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Renderer.h
         ${CMAKE_CURRENT_SOURCE_DIR}/Renderer.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Camera.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/OrthCamera.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/OrthCamera.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/PerspectiveCamera.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/PerspectiveCamera.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/VertexArray.h
         ${CMAKE_CURRENT_SOURCE_DIR}/VertexArray.cpp
 )

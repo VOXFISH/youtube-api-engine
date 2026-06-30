@@ -31,12 +31,12 @@ namespace Rice
         glLineWidth(width);
     }
 
-    void RenderAPI::SetClearColor(const glm::vec4& color)
+    void RenderAPI::SetClearColor(const Vector4& color)
     {
         glClearColor(color.r, color.g, color.b, color.a);
     }
 
-    void RenderAPI::DrawIndexed(const std::shared_ptr<VertexArray>& vertexArray)
+    void RenderAPI::DrawIndexed(const Ref<VertexArray>& vertexArray)
     {
         vertexArray->Bind();
         glDrawElements(
@@ -46,7 +46,7 @@ namespace Rice
             nullptr);
     }
 
-    void RenderAPI::DrawLinesIndexed(const std::shared_ptr<VertexArray>& vertexArray)
+    void RenderAPI::DrawLinesIndexed(const Ref<VertexArray>& vertexArray)
     {
         vertexArray->Bind();
         glDrawElements(

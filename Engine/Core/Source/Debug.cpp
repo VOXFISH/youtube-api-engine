@@ -7,8 +7,8 @@
 #endif
 
 namespace Rice{
-    std::shared_ptr<spdlog::logger> Debug::s_CoreLogger;
-    std::shared_ptr<spdlog::logger> Debug::s_ClientLogger;
+    Ref<spdlog::logger> Debug::s_CoreLogger;
+    Ref<spdlog::logger> Debug::s_ClientLogger;
 
     void Debug::Init()
     {

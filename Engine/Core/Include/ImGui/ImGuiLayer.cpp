@@ -53,8 +53,10 @@ namespace Rice
         }
     }
 
-    void ImGuiLayer::OnUpdate()
+    void ImGuiLayer::OnUpdate(Time ts)
     {
+        (void)ts;
+
         if (!m_Initialized)
         {
             return;
@@ -64,7 +66,11 @@ namespace Rice
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::ShowDemoWindow(&m_ShowDemoWindow);
+        if (m_ShowDemoWindow)
+            ImGui::ShowDemoWindow(&m_ShowDemoWindow);
+
+        if (m_RenderCallback)
+            m_RenderCallback();
 
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -95,5 +101,10 @@ namespace Rice
         {
             event.Handled = true;
         }
+    }
+
+    void ImGuiLayer::SetRenderCallback(std::function<void()> callback)
+    {
+        m_RenderCallback = std::move(callback);
     }
 }

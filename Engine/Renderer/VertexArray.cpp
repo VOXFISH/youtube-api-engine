@@ -51,7 +51,7 @@ namespace Rice
         glBindVertexArray(0);
     }
 
-    void VertexArray::AddVertexBuffer(const std::shared_ptr<VertexBuffer>& vertexBuffer)
+    void VertexArray::AddVertexBuffer(const Ref<VertexBuffer>& vertexBuffer)
     {
         glBindVertexArray(m_RendererID);
         vertexBuffer->Bind();
@@ -73,7 +73,7 @@ namespace Rice
         m_VertexBuffers.push_back(vertexBuffer);
     }
 
-    void VertexArray::SetIndexBuffer(const std::shared_ptr<IndexBuffer>& indexBuffer)
+    void VertexArray::SetIndexBuffer(const Ref<IndexBuffer>& indexBuffer)
     {
         glBindVertexArray(m_RendererID);
         indexBuffer->Bind();

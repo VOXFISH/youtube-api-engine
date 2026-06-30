@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rice/Core.h"
+#include "Rice/Time.h"
 #include "Event/Event.h"
 
 namespace Rice
@@ -13,7 +14,8 @@ namespace Rice
 
         virtual void OnAttach() {}
         virtual void OnDetach() {}
-        virtual void OnUpdate() {}
+        virtual void OnUpdate(Time) {}
+        virtual void OnImGuiRender() {}
         virtual void OnEvent(Event&) {}
 
         inline const std::string& Getname() const {return m_DebugName;}
