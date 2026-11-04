@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rice/Benchmark.h"
 #include "Rice/Core.h"
 #include "Layer.h"
 
@@ -11,7 +12,7 @@ namespace Rice
     {
     private:
         std::vector<Layer*> m_Layers;
-        std::vector<Layer*>::iterator m_LayerInsert;
+        size_t m_LayerInsert = 0;
     public:
         LayerStack();
         ~LayerStack();
@@ -21,7 +22,7 @@ namespace Rice
         void PopLayer(Layer* layer);
         void PopOverlay(Layer* overlay);
 
-        std::vector<Layer*>::iterator begin() {return m_Layers.begin();}
-        std::vector<Layer*>::iterator end() {return m_Layers.end();}
+        std::vector<Layer*>::iterator begin() { RICE_BENCHMARK_FUNCTION(); return m_Layers.begin();}
+        std::vector<Layer*>::iterator end() { RICE_BENCHMARK_FUNCTION(); return m_Layers.end();}
     };
 }

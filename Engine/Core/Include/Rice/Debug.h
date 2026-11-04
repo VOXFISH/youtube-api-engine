@@ -1,17 +1,26 @@
-﻿#pragma once
+#pragma once
 
+#include "Rice/Benchmark.h"
 #include "Core.h"
 #include "spdlog/spdlog.h"
+#include <vector>
+#include <string>
+#include <cstdint>
 
 namespace Rice{
+
+    struct LogEntry { uint64_t sequence; spdlog::level::level_enum level; std::string text; };
 
     class RICE_API Debug
     {
         public:
             static void Init();
+            static std::vector<LogEntry> GetMessages();
+            static void ClearMessages();
+            static constexpr size_t MessageCapacity = 2000;
             
-            inline static Ref<spdlog::logger>& GetCoreLogger() { return s_CoreLogger; }
-            inline static Ref<spdlog::logger>& GetClientLogger() { return s_ClientLogger; }
+            inline static Ref<spdlog::logger>& GetCoreLogger() { RICE_BENCHMARK_FUNCTION(); return s_CoreLogger; }
+            inline static Ref<spdlog::logger>& GetClientLogger() { RICE_BENCHMARK_FUNCTION(); return s_ClientLogger; }
         private:
             static Ref<spdlog::logger> s_CoreLogger;
             static Ref<spdlog::logger> s_ClientLogger;

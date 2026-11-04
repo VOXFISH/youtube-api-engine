@@ -1,0 +1,7 @@
+set(FMOD_ROOT "C:/Program Files (x86)/FMOD SoundSystem/FMOD Studio API Windows" CACHE PATH "FMOD Studio API SDK root")
+find_path(FMOD_INCLUDE_DIR fmod.hpp PATHS "${FMOD_ROOT}/api/core/inc" REQUIRED NO_DEFAULT_PATH)
+find_library(FMOD_LIBRARY fmod_vc PATHS "${FMOD_ROOT}/api/core/lib/x64" REQUIRED NO_DEFAULT_PATH)
+find_file(FMOD_DLL fmod.dll PATHS "${FMOD_ROOT}/api/core/lib/x64" REQUIRED NO_DEFAULT_PATH)
+add_library(FMOD::Core SHARED IMPORTED GLOBAL)
+set_target_properties(FMOD::Core PROPERTIES IMPORTED_IMPLIB "${FMOD_LIBRARY}" IMPORTED_LOCATION "${FMOD_DLL}" INTERFACE_INCLUDE_DIRECTORIES "${FMOD_INCLUDE_DIR}")
+target_link_libraries(RiceCore PUBLIC FMOD::Core)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rice/Benchmark.h"
 #include "PreCompiledHeaders.h"
 
 #include "Core.h"
@@ -21,6 +22,7 @@ namespace Rice
             unsigned int height = 1080)
             : Title(title), Width(width), Height(height)
         {
+            RICE_BENCHMARK_FUNCTION();
         }
     };
 

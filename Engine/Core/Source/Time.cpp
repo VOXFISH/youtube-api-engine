@@ -1,3 +1,4 @@
+#include "Rice/Benchmark.h"
 #include "Rice/PreCompiledHeaders.h"
 #include "Rice/Time.h"
 
@@ -12,6 +13,7 @@ namespace Rice
 
     Time::TimeScale& Time::TimeScale::operator=(float scale)
     {
+        RICE_BENCHMARK_FUNCTION();
         if (scale < 0.0f)
         {
             RICE_CORE_WARNING("timeScale cannot be negative. Clamped to 0.");
@@ -27,6 +29,7 @@ namespace Rice
 
     void Time::Update(float currentTime)
     {
+        RICE_BENCHMARK_FUNCTION();
         unscaledDeltaTime = currentTime - frameTime;
         frameTime = currentTime;
 

@@ -1,85 +1,62 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": {
-    "major": 3,
-    "minor": 25,
-    "patch": 0
-  },
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
   "configurePresets": [
     {
-      "name": "ninja-base",
+      "name": "windows-base",
       "hidden": true,
-      "generator": "Ninja",
       "binaryDir": "${sourceDir}/Build/${presetName}",
-      "environment": {
-        "VCPKG_ROOT": "C:/Users/user/vcpkg",
-        "PATH": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.40.33807/bin/Hostx64/x64;C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64;$penv{PATH}",
-        "INCLUDE": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.40.33807/include;C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/ucrt;C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/shared;C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/um;C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/winrt;C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/cppwinrt;$penv{INCLUDE}",
-        "LIB": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.40.33807/lib/x64;C:/Program Files (x86)/Windows Kits/10/lib/10.0.22621.0/ucrt/x64;C:/Program Files (x86)/Windows Kits/10/lib/10.0.22621.0/um/x64;$penv{LIB}"
-      },
+      "architecture": "x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
-        "CMAKE_MAKE_PROGRAM": "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe",
-        "CMAKE_C_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.40.33807/bin/Hostx64/x64/cl.exe",
-        "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.40.33807/bin/Hostx64/x64/cl.exe",
-        "CMAKE_RC_COMPILER": "C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/rc.exe",
-        "CMAKE_MT": "C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/mt.exe",
-        "VCPKG_TARGET_TRIPLET": "x64-windows"
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "BUILD_TESTING": "ON"
       }
     },
     {
-      "name": "ninja-debug",
-      "displayName": "Ninja Debug",
-      "inherits": "ninja-base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
+      "name": "windows-vs2022",
+      "displayName": "Windows x64 (Visual Studio 2022)",
+      "description": "Requires Visual Studio C++ tools and VCPKG_ROOT. Pass -DFMOD_ROOT=<SDK folder> for a nonstandard FMOD installation.",
+      "inherits": "windows-base",
+      "generator": "Visual Studio 17 2022"
     },
     {
-      "name": "ninja-release",
-      "displayName": "Ninja Release",
-      "inherits": "ninja-base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
-      }
+      "name": "windows-vs2026",
+      "displayName": "Windows x64 (Visual Studio 2026)",
+      "description": "Requires Visual Studio C++ tools and VCPKG_ROOT. Pass -DFMOD_ROOT=<SDK folder> for a nonstandard FMOD installation.",
+      "inherits": "windows-base",
+      "generator": "Visual Studio 18 2026"
     }
   ],
   "buildPresets": [
-    {
-      "name": "build-ninja-debug",
-      "configurePreset": "ninja-debug"
-    },
-    {
-      "name": "build-ninja-release",
-      "configurePreset": "ninja-release"
-    }
+    { "name": "build-vs2022-release", "configurePreset": "windows-vs2022", "configuration": "Release", "jobs": 4 },
+    { "name": "build-vs2022-debug", "configurePreset": "windows-vs2022", "configuration": "Debug", "jobs": 4 },
+    { "name": "build-vs2026-release", "configurePreset": "windows-vs2026", "configuration": "Release", "jobs": 4 },
+    { "name": "build-vs2026-debug", "configurePreset": "windows-vs2026", "configuration": "Debug", "jobs": 4 }
+  ],
+  "testPresets": [
+    { "name": "test-vs2022-release", "configurePreset": "windows-vs2022", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "test-vs2022-debug", "configurePreset": "windows-vs2022", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "test-vs2026-release", "configurePreset": "windows-vs2026", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "test-vs2026-debug", "configurePreset": "windows-vs2026", "configuration": "Debug", "output": { "outputOnFailure": true } }
   ],
   "workflowPresets": [
     {
-      "name": "ninja-debug",
-      "displayName": "Configure and build Ninja Debug",
+      "name": "vs2022-release",
+      "displayName": "Configure, build and test (VS 2022 Release)",
       "steps": [
-        {
-          "type": "configure",
-          "name": "ninja-debug"
-        },
-        {
-          "type": "build",
-          "name": "build-ninja-debug"
-        }
+        { "type": "configure", "name": "windows-vs2022" },
+        { "type": "build", "name": "build-vs2022-release" },
+        { "type": "test", "name": "test-vs2022-release" }
       ]
     },
     {
-      "name": "ninja-release",
-      "displayName": "Configure and build Ninja Release",
+      "name": "vs2026-release",
+      "displayName": "Configure, build and test (VS 2026 Release)",
       "steps": [
-        {
-          "type": "configure",
-          "name": "ninja-release"
-        },
-        {
-          "type": "build",
-          "name": "build-ninja-release"
-        }
+        { "type": "configure", "name": "windows-vs2026" },
+        { "type": "build", "name": "build-vs2026-release" },
+        { "type": "test", "name": "test-vs2026-release" }
       ]
     }
   ]

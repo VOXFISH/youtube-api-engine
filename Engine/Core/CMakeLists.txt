@@ -4,6 +4,7 @@ target_sources(
     RiceCore
     PRIVATE
         Source/Application.cpp
+        Source/Benchmark.cpp
         Source/Debug.cpp
         Include/ImGui/ImGuiLayer.cpp
         Source/Layer.cpp
@@ -24,6 +25,7 @@ target_sources(
             Include/Event/MouseCode.h
             Include/Event/MouseEvent.h
             Include/Rice/Application.h
+            Include/Rice/Benchmark.h
             Include/Rice/Core.h
             Include/Rice/Debug.h
             Include/Rice/EntryPoint.h

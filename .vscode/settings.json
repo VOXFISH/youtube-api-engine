@@ -1,6 +1,5 @@
 {
-  "cmake.configurePreset": "windows-debug",
-  "cmake.buildPreset": "build-windows-debug",
-  "cmake.useVsDeveloperEnvironment": "never",
-  "C_Cpp.errorSquiggles": "disabled"
+  "cmake.useCMakePresets": "always",
+  "cmake.useVsDeveloperEnvironment": "auto",
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
 }

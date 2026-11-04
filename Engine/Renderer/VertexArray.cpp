@@ -1,3 +1,4 @@
+#include "Rice/Benchmark.h"
 #include "Rice/PreCompiledHeaders.h"
 #include "VertexArray.h"
 
@@ -7,6 +8,7 @@ namespace Rice
 {
     static GLenum ShaderDataTypeToOpenGLBaseType(ShaderDataType type)
     {
+        RICE_BENCHMARK_FUNCTION();
         switch (type)
         {
             case ShaderDataType::Float:
@@ -33,41 +35,52 @@ namespace Rice
 
     VertexArray::VertexArray()
     {
+        RICE_BENCHMARK_FUNCTION();
         glGenVertexArrays(1, &m_RendererID);
     }
 
     VertexArray::~VertexArray()
     {
+        RICE_BENCHMARK_FUNCTION();
         glDeleteVertexArrays(1, &m_RendererID);
     }
 
     void VertexArray::Bind() const
     {
+        RICE_BENCHMARK_FUNCTION();
         glBindVertexArray(m_RendererID);
     }
 
     void VertexArray::Unbind() const
     {
+        RICE_BENCHMARK_FUNCTION();
         glBindVertexArray(0);
     }
 
-    void VertexArray::AddVertexBuffer(const Ref<VertexBuffer>& vertexBuffer)
+    void VertexArray::AddVertexBuffer(const Ref<VertexBuffer>& vertexBuffer, uint32_t divisor)
     {
+        RICE_BENCHMARK_FUNCTION();
         glBindVertexArray(m_RendererID);
         vertexBuffer->Bind();
 
         const auto& layout = vertexBuffer->GetLayout();
         for (const auto& element : layout)
         {
-            const uint32_t index = m_VertexBufferIndex++;
-            glEnableVertexAttribArray(index);
-            glVertexAttribPointer(
-                index,
-                static_cast<GLint>(element.GetComponentCount()),
-                ShaderDataTypeToOpenGLBaseType(element.type),
-                element.isNormalized ? GL_TRUE : GL_FALSE,
-                static_cast<GLsizei>(layout.GetStride()),
-                reinterpret_cast<const void*>(static_cast<uintptr_t>(element.offset)));
+            const uint32_t columns = element.type == ShaderDataType::Mat4 ? 4 : element.type == ShaderDataType::Mat3 ? 3 : 1;
+            const GLint components = static_cast<GLint>(columns == 1 ? element.GetComponentCount() : columns);
+            for (uint32_t column = 0; column < columns; ++column)
+            {
+                const uint32_t index = m_VertexBufferIndex++;
+                glEnableVertexAttribArray(index);
+                glVertexAttribPointer(
+                    index,
+                    components,
+                    ShaderDataTypeToOpenGLBaseType(element.type),
+                    element.isNormalized ? GL_TRUE : GL_FALSE,
+                    static_cast<GLsizei>(layout.GetStride()),
+                    reinterpret_cast<const void*>(static_cast<uintptr_t>(element.offset + column * columns * sizeof(float))));
+                glVertexAttribDivisor(index, divisor);
+            }
         }
 
         m_VertexBuffers.push_back(vertexBuffer);
@@ -75,6 +88,7 @@ namespace Rice
 
     void VertexArray::SetIndexBuffer(const Ref<IndexBuffer>& indexBuffer)
     {
+        RICE_BENCHMARK_FUNCTION();
         glBindVertexArray(m_RendererID);
         indexBuffer->Bind();
         m_IndexBuffer = indexBuffer;

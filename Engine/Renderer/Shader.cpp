@@ -1,3 +1,4 @@
+#include "Rice/Benchmark.h"
 #include "Rice/PreCompiledHeaders.h"
 #include "Shader.h"
 #include "Platform/OpenGL/OpenGLShader.h"
@@ -9,6 +10,7 @@ namespace Rice
 {
     Shader* Shader::Create(const std::string& vertexSource, const std::string& fragmentSource)
     {
+        RICE_BENCHMARK_FUNCTION();
         return new OpenGLShader(vertexSource, fragmentSource);
     }
 }

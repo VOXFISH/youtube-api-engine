@@ -1,0 +1,44 @@
+name: Demo package smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-package:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Provision software OpenGL for the hosted runner
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Version and SHA-256 from the publisher's GitHub release asset metadata.
+          # https://github.com/pal1000/mesa-dist-win/releases/tag/26.2.4
+          $archive = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.4-release-msvc.7z'
+          $mesa = Join-Path $env:RUNNER_TEMP 'rice-mesa'
+          Invoke-WebRequest -Uri 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z' -OutFile $archive
+          $expected = '351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695'
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) { throw 'Mesa checksum mismatch' }
+          & 7z x $archive "-o$mesa" '-y' 'x64/opengl32.dll' 'x64/libgallium_wgl.dll' 'x64/dxil.dll'
+          if ($LASTEXITCODE) { throw 'Mesa extraction failed' }
+      - name: Run the committed package without SDKs or source files
+        run: |
+          ./scripts/Verify-Demo.ps1 -PackageRoot $env:GITHUB_WORKSPACE -OutputDirectory "$env:RUNNER_TEMP/rice-demo-verification" -MesaDirectory "$env:RUNNER_TEMP/rice-mesa/x64"
+      - name: Preserve verification results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: demo-smoke-windows-2022
+          path: |
+            ${{ runner.temp }}/rice-demo-verification/results.json
+            ${{ runner.temp }}/rice-demo-verification/*.txt
+          if-no-files-found: warn
+          retention-days: 14

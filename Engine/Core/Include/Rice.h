@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rice/Application.h"
+#include "Rice/Benchmark.h"
 #include "Rice/Debug.h"
 #include "Rice/Time.h"
 #include "Rice/Layer.h"
@@ -26,3 +27,4 @@
     #include <iostream>
     #include "Rice/EntryPoint.h"
 #endif
+#include "Scene/Scene.h"

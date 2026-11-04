@@ -1,3 +1,4 @@
+#include "Rice/Benchmark.h"
 #include "Rice/PreCompiledHeaders.h"
 #include "PerspectiveCamera.h"
 
@@ -6,18 +7,21 @@ namespace Rice
     PerspectiveCamera::PerspectiveCamera(float fovDegree, float aspectRatio, float nearClip, float farClip)
         : m_FovDegree(fovDegree), m_AspectRatio(aspectRatio), m_NearClip(nearClip), m_FarClip(farClip)
     {
+        RICE_BENCHMARK_FUNCTION();
         ResetProjection();
         ResetView();
     }
 
     void PerspectiveCamera::ResetProjection()
     {
+        RICE_BENCHMARK_FUNCTION();
         m_ProjectionMatrix = glm::perspective(glm::radians(m_FovDegree), m_AspectRatio, m_NearClip, m_FarClip);
         m_VPMatrix = m_ProjectionMatrix * m_ViewMatrix;
     }
 
     void PerspectiveCamera::ResetView()
     {
+        RICE_BENCHMARK_FUNCTION();
         Matrix4 translation = glm::translate(Matrix4(1.0f), m_Position);
         Matrix4 rotation = glm::mat4_cast(m_Rotation);
         Matrix4 scale = glm::scale(Matrix4(1.0f), m_Scale);
@@ -30,6 +34,7 @@ namespace Rice
 
     void PerspectiveCamera::SetPerspective(float fovDegree, float aspectRatio, float nearClip, float farClip)
     {
+        RICE_BENCHMARK_FUNCTION();
         m_FovDegree = fovDegree;
         m_AspectRatio = aspectRatio;
         m_NearClip = nearClip;
@@ -39,12 +44,14 @@ namespace Rice
 
     void PerspectiveCamera::SetPosition(const Vector3& position)
     {
+        RICE_BENCHMARK_FUNCTION();
         m_Position = position;
         ResetView();
     }
 
     void PerspectiveCamera::SetRotationZ(float degree)
     {
+        RICE_BENCHMARK_FUNCTION();
         m_Rotation = glm::angleAxis(
             glm::radians(degree),
             Vector3(0.0f, 0.0f, 1.0f)
@@ -56,6 +63,7 @@ namespace Rice
 
     void PerspectiveCamera::SetRotation3D(const Vector3& axis, float degree)
     {
+        RICE_BENCHMARK_FUNCTION();
         if (glm::length(axis) == 0.0f)
             return;
 
@@ -72,6 +80,7 @@ namespace Rice
 
     void PerspectiveCamera::AddRotation3D(const Vector3& axis, float degree)
     {
+        RICE_BENCHMARK_FUNCTION();
         if (glm::length(axis) == 0.0f)
             return;
 
@@ -88,12 +97,14 @@ namespace Rice
 
     void PerspectiveCamera::SetScale(const Vector3& scale)
     {
+        RICE_BENCHMARK_FUNCTION();
         m_Scale = scale;
         ResetView();
     }
 
     void PerspectiveCamera::LookAtObj(const Vector3& objPos)
     {
+        RICE_BENCHMARK_FUNCTION();
         m_ViewMatrix = glm::lookAt(
             m_Position,
             objPos,

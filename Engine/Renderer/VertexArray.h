@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rice/Benchmark.h"
 #include "Rice/Core.h"
 #include "Buffer.h"
 
@@ -16,11 +17,11 @@ namespace Rice
         void Bind() const;
         void Unbind() const;
 
-        void AddVertexBuffer(const Ref<VertexBuffer>& vertexBuffer);
+        void AddVertexBuffer(const Ref<VertexBuffer>& vertexBuffer, uint32_t divisor=0);
         void SetIndexBuffer(const Ref<IndexBuffer>& indexBuffer);
 
-        const std::vector<Ref<VertexBuffer>>& GetVertexBuffers() const { return m_VertexBuffers; }
-        const Ref<IndexBuffer>& GetIndexBuffer() const { return m_IndexBuffer; }
+        const std::vector<Ref<VertexBuffer>>& GetVertexBuffers() const { RICE_BENCHMARK_FUNCTION(); return m_VertexBuffers; }
+        const Ref<IndexBuffer>& GetIndexBuffer() const { RICE_BENCHMARK_FUNCTION(); return m_IndexBuffer; }
 
     private:
         uint32_t m_RendererID = 0;

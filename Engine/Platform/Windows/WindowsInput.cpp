@@ -1,3 +1,4 @@
+#include "Rice/Benchmark.h"
 #include "Rice/PreCompiledHeaders.h"
 #include "WindowsInput.h"
 #include "Rice/Application.h"
@@ -9,6 +10,7 @@ namespace Rice
 
     bool WindowsInput::IsKeyPressedImpl(KeyCode keyCode)
     {
+        RICE_BENCHMARK_FUNCTION();
         auto window = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
         auto state = glfwGetKey(window, static_cast<int>(keyCode));
         return state == GLFW_PRESS || state == GLFW_REPEAT;
@@ -16,6 +18,7 @@ namespace Rice
 
     bool WindowsInput::IsMouseButtonPressedImpl(MouseCode button)
     {
+        RICE_BENCHMARK_FUNCTION();
         auto window = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
         auto state = glfwGetMouseButton(window, static_cast<int>(button));
         return state == GLFW_PRESS;
@@ -23,6 +26,7 @@ namespace Rice
 
     std::pair<float, float> WindowsInput::GetMousePositionImpl()
     {
+        RICE_BENCHMARK_FUNCTION();
         auto window = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
         double xpos, ypos;
         glfwGetCursorPos(window, &xpos, &ypos);
@@ -32,6 +36,7 @@ namespace Rice
 
     float WindowsInput::GetMouseXImpl()
     {
+        RICE_BENCHMARK_FUNCTION();
         auto [x, y] = GetMousePositionImpl();
         (void)y;
         return x;
@@ -39,6 +44,7 @@ namespace Rice
 
     float WindowsInput::GetMouseYImpl()
     {
+        RICE_BENCHMARK_FUNCTION();
         auto [x, y] = GetMousePositionImpl();
         (void)x;
         return y;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rice/Benchmark.h"
 #include "Event/KeyCode.h"
 #include "Event/MouseCode.h"
 #include "Rice/Core.h"
@@ -20,11 +21,11 @@ namespace Rice
         virtual float GetMouseXImpl() = 0;
         virtual float GetMouseYImpl() = 0;
     public:
-        inline static bool IsKeyPressed(KeyCode keyCode) { return s_Instance->IsKeyPressedImpl(keyCode); }
+        inline static bool IsKeyPressed(KeyCode keyCode) { RICE_BENCHMARK_FUNCTION(); return s_Instance->IsKeyPressedImpl(keyCode); }
         
-        inline static bool IsMouseButtonPressed(MouseCode button) { return s_Instance->IsMouseButtonPressedImpl(button); }
-        inline static std::pair<float, float> GetMousePosition() { return s_Instance->GetMousePositionImpl(); }
-        inline static float GetMouseX() { return s_Instance->GetMouseXImpl(); }
-        inline static float GetMouseY() { return s_Instance->GetMouseYImpl(); }
+        inline static bool IsMouseButtonPressed(MouseCode button) { RICE_BENCHMARK_FUNCTION(); return s_Instance->IsMouseButtonPressedImpl(button); }
+        inline static std::pair<float, float> GetMousePosition() { RICE_BENCHMARK_FUNCTION(); return s_Instance->GetMousePositionImpl(); }
+        inline static float GetMouseX() { RICE_BENCHMARK_FUNCTION(); return s_Instance->GetMouseXImpl(); }
+        inline static float GetMouseY() { RICE_BENCHMARK_FUNCTION(); return s_Instance->GetMouseYImpl(); }
     };
 }

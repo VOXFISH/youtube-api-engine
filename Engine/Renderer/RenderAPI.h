@@ -15,7 +15,8 @@ namespace Rice
         void SetLineWidth(float width);
         void Clear();
         void SetClearColor(const Vector4& color);
-        void DrawIndexed(const Ref<VertexArray>& vertexArray);
+        void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount=0, uint32_t firstIndex=0);
+        void DrawIndexedInstanced(const Ref<VertexArray>& vertexArray, uint32_t instanceCount);
         void DrawLinesIndexed(const Ref<VertexArray>& vertexArray);
     };
 }

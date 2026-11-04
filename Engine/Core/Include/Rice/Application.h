@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rice/Benchmark.h"
 #include "Core.h"
 #include "LayerStack.h"
 #include "Event/Event.h"
@@ -13,22 +14,23 @@ namespace Rice
     {
     public:
         Application();
-        ~Application();
+        virtual ~Application();
 
         static Application& Get();
 
         void Run();
+        void Close() { RICE_BENCHMARK_FUNCTION(); m_Running = false; }
     
         void OnEvent(Event& e);
 
         void PushLayer(Layer* layer);
         void PushOverlay(Layer* layer);
-        Window& GetWindow() const { return *m_Window; }
+        Window& GetWindow() const { RICE_BENCHMARK_FUNCTION(); return *m_Window; }
     protected:
-        virtual void OnInit() {}
-        virtual void OnUpdate(Time) {}
-        virtual void OnRender() {}
-        virtual void OnShutDown() {}
+        virtual void OnInit() { RICE_BENCHMARK_FUNCTION(); }
+        virtual void OnUpdate(Time) { RICE_BENCHMARK_FUNCTION(); }
+        virtual void OnRender() { RICE_BENCHMARK_FUNCTION(); }
+        virtual void OnShutDown() { RICE_BENCHMARK_FUNCTION(); }
 
     private:
         bool OnWindowClose(WindowCloseEvent& e);

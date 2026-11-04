@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rice/Benchmark.h"
 #include "Rice/Core.h"
 #include "Rice/Debug.h"
 
@@ -28,6 +29,7 @@ namespace Rice
 
     static uint32_t ShaderDataTypeSize(ShaderDataType type)
     {
+        RICE_BENCHMARK_FUNCTION();
         switch (type)
         {
             case ShaderDataType::Float:  return 4;
@@ -55,10 +57,12 @@ namespace Rice
         BufferElement(ShaderDataType t, const std::string& n, bool normalized = false)
             : name(n), type(t), offset(0), size(ShaderDataTypeSize(t)), isNormalized(normalized)
         {
+            RICE_BENCHMARK_FUNCTION();
         }
 
         uint32_t GetComponentCount() const
         {
+            RICE_BENCHMARK_FUNCTION();
             switch (type)
             {
                 case ShaderDataType::Float:  return 1;
@@ -94,20 +98,22 @@ namespace Rice
         BufferLayout(const std::initializer_list<BufferElement>& elements)
             : m_Elements(elements)
         {
+            RICE_BENCHMARK_FUNCTION();
             CalculateOffsetAndStride();
         }
 
-        uint32_t GetStride() const { return m_Stride; }
-        const std::vector<BufferElement>& GetElements() const { return m_Elements; }
+        uint32_t GetStride() const { RICE_BENCHMARK_FUNCTION(); return m_Stride; }
+        const std::vector<BufferElement>& GetElements() const { RICE_BENCHMARK_FUNCTION(); return m_Elements; }
 
-        std::vector<BufferElement>::iterator begin() { return m_Elements.begin(); }
-        std::vector<BufferElement>::iterator end() { return m_Elements.end(); }
-        std::vector<BufferElement>::const_iterator begin() const { return m_Elements.begin(); }
-        std::vector<BufferElement>::const_iterator end() const { return m_Elements.end(); }
+        std::vector<BufferElement>::iterator begin() { RICE_BENCHMARK_FUNCTION(); return m_Elements.begin(); }
+        std::vector<BufferElement>::iterator end() { RICE_BENCHMARK_FUNCTION(); return m_Elements.end(); }
+        std::vector<BufferElement>::const_iterator begin() const { RICE_BENCHMARK_FUNCTION(); return m_Elements.begin(); }
+        std::vector<BufferElement>::const_iterator end() const { RICE_BENCHMARK_FUNCTION(); return m_Elements.end(); }
 
     private:
         void CalculateOffsetAndStride()
         {
+            RICE_BENCHMARK_FUNCTION();
             uint32_t offset = 0;
             m_Stride = 0;
             for (auto& element : m_Elements)
@@ -130,12 +136,15 @@ namespace Rice
 
         void Bind() const;
         void Unbind() const;
+        // Stream changing instance/vertex data without rebuilding its VAO.
+        void SetData(const void* data, uint32_t size);
 
-        void SetLayout(const BufferLayout& layout) { m_Layout = layout; }
-        const BufferLayout& GetLayout() const { return m_Layout; }
+        void SetLayout(const BufferLayout& layout) { RICE_BENCHMARK_FUNCTION(); m_Layout = layout; }
+        const BufferLayout& GetLayout() const { RICE_BENCHMARK_FUNCTION(); return m_Layout; }
 
     private:
         uint32_t m_RendererID = 0;
+        uint32_t m_StreamCapacity = 0;
         BufferLayout m_Layout;
     };
 

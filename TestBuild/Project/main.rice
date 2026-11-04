@@ -1,0 +1,114 @@
+RICE_SCENE 5
+Settings 0 "" 0 1 1 1 1  1 -1 -1 -1  0 1
+EditorGrid 1 1 1 0 0 1 
+Object 1 0 "Player" 1 -1.19266677 -0.106521845 -0.349619389 0 -82.0947571 0 1 1 1 0 0 0 1.00000012 0 -5.36441803e-07 0 0 1 0 0 5.36441803e-07 0 1.00000012 0 -1.1920929e-07 7.4505806e-09 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.5 0.5 0.5 
+Component "MeshRenderer"
+"Enabled" 1
+"Color" 0.407843143 0.470588237 0.121568628 1 
+"Shape" 0
+"Custom mesh" 0 0 
+"Shape asset" ""
+"Triangle materials" 0 
+EndComponent
+Component "ReflectionProbe"
+"Enabled" 1
+"Cubemap resolution" 256
+"Mipmap storage quality" 0
+"Max object size" 10
+"Fix up edge seams" 1
+EndComponent
+Component "Material"
+"Enabled" 1
+"Metalicity" 1
+"Roughness" 0
+"Albedo asset" ""
+EndComponent
+Component "BoxCollider"
+"Enabled" 1
+"Center" 0 0 0 
+"Size" 1 1 1 
+"Trigger" 0
+EndComponent
+Component "Rigidbody"
+"Enabled" 1
+"Velocity" 0 0 0 
+"Mass" 1
+"Restitution" 0
+"Gravity" 1
+"Kinematic" 0
+EndComponent
+Component "PlayerController"
+"Enabled" 1
+"Speed" 3
+EndComponent
+EndObject
+Object 2 0 "Floor" 1 0.420179099 -1.10652208 -1.70309544 0 0 0 8 1 8 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.5 0.5 0.5 
+Component "MeshRenderer"
+"Enabled" 1
+"Color" 0.200000003 0.449999988 0.25 1 
+"Shape" 0
+"Custom mesh" 0 0 
+"Shape asset" ""
+"Triangle materials" 0 
+EndComponent
+Component "Material"
+"Enabled" 1
+"Metalicity" 0
+"Roughness" 1
+"Albedo asset" ""
+EndComponent
+Component "BoxCollider"
+"Enabled" 1
+"Center" 0 0 0 
+"Size" 1 1 1 
+"Trigger" 0
+EndComponent
+EndObject
+Object 3 0 "Trigger" 1 -0.912224293 -0.106522083 -2.93097138 0 0 0 1 1 1 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.5 0.5 0.5 
+Component "MeshRenderer"
+"Enabled" 1
+"Color" 0.800000012 0.200000003 0.200000003 1 
+"Shape" 0
+"Custom mesh" 0 0 
+"Shape asset" ""
+"Triangle materials" 0 
+EndComponent
+Component "BoxCollider"
+"Enabled" 1
+"Center" 0 0 0 
+"Size" 1 1 1 
+"Trigger" 1
+EndComponent
+EndObject
+Object 4 0 "Sun" 1 0 10 0 0 0 0 1 1 1 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.5 0.5 0.5 
+Component "Light"
+"Enabled" 1
+"Color" 1 1 1 1 
+"Intensity" 2.27999997
+"Direction" -1 -1 -1 
+"Type" 1
+"Range" 10
+EndComponent
+EndObject
+Object 5 0 "Grass Cube" 1 0.670835972 0 -0.833356857 0 0 0 1 1 1 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.5 0.5 0.5 
+Component "MeshRenderer"
+"Enabled" 1
+"Color" 1 1 1 1 
+"Shape" 0
+"Custom mesh" 0 0 
+"Shape asset" ""
+"Triangle materials" 0 
+EndComponent
+Component "Material"
+"Enabled" 1
+"Metalicity" 0
+"Roughness" 0
+"Albedo asset" "dc09ab7125b6e3966fb83a37da886477"
+EndComponent
+Component "SpriteRenderer"
+"Enabled" 0
+"Color" 1 1 1 1 
+"Image asset" "dc09ab7125b6e3966fb83a37da886477"
+EndComponent
+EndObject
+EndScene

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Application.h"
+#include "Benchmark.h"
 #include "Debug.h"
 
 namespace Rice {
@@ -15,6 +16,7 @@ int main(int argc, char** argv)
     (void)argv;
 
     Rice::Debug::Init();
+    Rice::BenchmarkSession benchmark("Logs/functions.tsv");
     RICE_CORE_INFO("Rice Engine Initiated.");
     RICE_LOG("Hell World!");
 

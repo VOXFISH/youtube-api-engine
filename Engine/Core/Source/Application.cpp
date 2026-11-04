@@ -1,5 +1,6 @@
-﻿#include "Rice/PreCompiledHeaders.h"
+#include "Rice/PreCompiledHeaders.h"
 #include "Rice/Application.h"
+#include "Rice/Benchmark.h"
 #include "Input/Input.h"
 #include "Renderer/RenderCommand.h"
 
@@ -12,6 +13,7 @@ namespace Rice
 
     Application::Application()
     {
+        RICE_BENCHMARK_FUNCTION();
         RICE_CORE_ASSERT(!s_Instance, "Application already exists!");
         s_Instance = this;
 
@@ -26,6 +28,7 @@ namespace Rice
 
     Application::~Application()
     {
+        RICE_BENCHMARK_FUNCTION();
         if (s_Instance == this)
         {
             s_Instance = nullptr;
@@ -34,24 +37,28 @@ namespace Rice
 
     Application &Application::Get()
     {
+        RICE_BENCHMARK_FUNCTION();
         RICE_CORE_ASSERT(s_Instance, "Application has not been created yet!");
         return *s_Instance;
     }
 
     void Application::PushLayer(Layer *layer)
     {
+        RICE_BENCHMARK_FUNCTION();
         m_LayerStack.PushLayer(layer);
         layer->OnAttach();
     }
 
     void Application::PushOverlay(Layer *overlay)
     {
+        RICE_BENCHMARK_FUNCTION();
         m_LayerStack.PushOverlay(overlay);
         overlay->OnAttach();
     }
 
     void Application::OnEvent(Event &e)
     {
+        RICE_BENCHMARK_FUNCTION();
         EventDispatcher dispatcher(e);
         dispatcher.Dispatch<WindowCloseEvent>(
             std::bind(&Application::OnWindowClose, this, std::placeholders::_1));
@@ -68,17 +75,22 @@ namespace Rice
     {
         OnInit();
 
+        Time::frameTime = static_cast<float>(glfwGetTime());
         while (m_Running)
         {
+            BenchmarkFrame frame;
             Time::Update((float)glfwGetTime());
             deltaTime = Time(Time::deltaTime);
 
             m_Window->OnUpdate();
+            if (!m_Running) break;
 
             RenderCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
             RenderCommand::Clear();
 
             OnUpdate(deltaTime);
+
+            OnRender();
 
             for (Layer *layer : m_LayerStack)
             {
@@ -86,7 +98,6 @@ namespace Rice
                 layer->OnImGuiRender();
             }
 
-            OnRender();
             m_Window->SwapBuffers();
         }
 
@@ -95,6 +106,7 @@ namespace Rice
 
     bool Application::OnWindowClose(WindowCloseEvent &e)
     {
+        RICE_BENCHMARK_FUNCTION();
         (void)e;
         m_Running = false;
         return true;

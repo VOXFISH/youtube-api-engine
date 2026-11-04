@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rice/Benchmark.h"
 #include "Camera.h"
 
 #include <glm/glm.hpp>
@@ -26,20 +27,20 @@ namespace Rice
         OrthCamera(float left, float right, float bottom, float top);
 
         void SetPosition(const Vector3& position) override;
-        const Vector3& GetPosition() const override { return m_Position; }
+        const Vector3& GetPosition() const override { RICE_BENCHMARK_FUNCTION(); return m_Position; }
 
         void SetRotationZ(float degree) override;
         void SetRotation3D(const Vector3& axis, float degree) override;
         void AddRotation3D(const Vector3& axis, float degree) override;
 
-        const Quaternion& GetRotation() const override { return m_Rotation; }
+        const Quaternion& GetRotation() const override { RICE_BENCHMARK_FUNCTION(); return m_Rotation; }
 
         void SetScale(const Vector3& scale) override;
-        const Vector3& GetScale() const override { return m_Scale; }
+        const Vector3& GetScale() const override { RICE_BENCHMARK_FUNCTION(); return m_Scale; }
 
-        const Matrix4& GetProjectionMatrix() const override { return m_ProjectionMatrix; }
-        const Matrix4& GetViewMatrix() const override { return m_ViewMatrix; }
-        const Matrix4& GetVPMatrix() const override { return m_VPMatrix; }
+        const Matrix4& GetProjectionMatrix() const override { RICE_BENCHMARK_FUNCTION(); return m_ProjectionMatrix; }
+        const Matrix4& GetViewMatrix() const override { RICE_BENCHMARK_FUNCTION(); return m_ViewMatrix; }
+        const Matrix4& GetVPMatrix() const override { RICE_BENCHMARK_FUNCTION(); return m_VPMatrix; }
 
         void LookAtObj(const Vector3& objPos) override;
     };

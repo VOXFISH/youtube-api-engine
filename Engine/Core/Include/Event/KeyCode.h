@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include "Rice/Benchmark.h"
 #include <cstdint>
 
 namespace Rice
@@ -124,6 +125,7 @@ namespace Rice
 
     inline const char* KeyCodeToString(KeyCode keyCode)
     {
+        RICE_BENCHMARK_FUNCTION();
         switch (keyCode)
         {
         case Key::Space: return "Space";

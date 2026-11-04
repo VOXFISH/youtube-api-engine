@@ -21,3 +21,5 @@ target_sources(
         ${CMAKE_CURRENT_SOURCE_DIR}/VertexArray.h
         ${CMAKE_CURRENT_SOURCE_DIR}/VertexArray.cpp
 )
+
+target_sources(RiceCore PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ViewportTarget.cpp)

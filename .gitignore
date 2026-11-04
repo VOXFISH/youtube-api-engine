@@ -2,3 +2,15 @@ CMakeUserPresets.json
 Build/
 CMakeCache.txt
 CMakeFiles/
+vcpkg_installed/
+**/Logs/
+*.log
+*.tmp
+*.bak
+*.pdb
+*.ilk
+/imgui.ini
+/EditorLayout.ini
+/EditorSettings.txt
+/TestBuild/EditorSettings.txt
+/Engine/Dependencies/spdlog/

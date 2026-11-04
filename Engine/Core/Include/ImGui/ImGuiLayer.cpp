@@ -1,3 +1,4 @@
+#include "Rice/Benchmark.h"
 #include "Rice/PreCompiledHeaders.h"
 #include "ImGuiLayer.h"
 
@@ -13,21 +14,25 @@ namespace Rice
     ImGuiLayer::ImGuiLayer()
         : Layer("ImGuiLayer")
     {
+        RICE_BENCHMARK_FUNCTION();
     }
 
     ImGuiLayer::~ImGuiLayer() = default;
 
     void ImGuiLayer::OnAttach()
     {
+        RICE_BENCHMARK_FUNCTION();
         GLFWwindow* nativeWindow = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
 
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
 
         ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        // Keep editor panels inside the single native application window.
+        io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 
         ImGui::StyleColorsDark();
         ImGuiStyle& style = ImGui::GetStyle();
@@ -38,12 +43,13 @@ namespace Rice
         }
 
         ImGui_ImplGlfw_InitForOpenGL(nativeWindow, true);
-        ImGui_ImplOpenGL3_Init("#version 410");
+        ImGui_ImplOpenGL3_Init("#version 330");
         m_Initialized = true;
     }
 
     void ImGuiLayer::OnDetach()
     {
+        RICE_BENCHMARK_FUNCTION();
         if (m_Initialized)
         {
             ImGui_ImplOpenGL3_Shutdown();
@@ -55,6 +61,7 @@ namespace Rice
 
     void ImGuiLayer::OnUpdate(Time ts)
     {
+        RICE_BENCHMARK_FUNCTION();
         (void)ts;
 
         if (!m_Initialized)
@@ -87,6 +94,7 @@ namespace Rice
 
     void ImGuiLayer::OnEvent(Event& event)
     {
+        RICE_BENCHMARK_FUNCTION();
         if (!m_Initialized)
         {
             return;
@@ -105,6 +113,7 @@ namespace Rice
 
     void ImGuiLayer::SetRenderCallback(std::function<void()> callback)
     {
+        RICE_BENCHMARK_FUNCTION();
         m_RenderCallback = std::move(callback);
     }
 }
