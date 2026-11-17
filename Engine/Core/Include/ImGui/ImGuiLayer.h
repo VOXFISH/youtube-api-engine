@@ -13,6 +13,7 @@ namespace Rice
         bool m_ShowDemoWindow = false;
         bool m_Initialized = false;
         std::function<void()> m_RenderCallback;
+        int m_CanvasWidth=0,m_CanvasHeight=0;
 
     public:
         ImGuiLayer();
@@ -24,5 +25,6 @@ namespace Rice
         void OnEvent(Event &event) override;
 
         void SetRenderCallback(std::function<void()> callback);
+        void SetCanvasSize(int width,int height){m_CanvasWidth=width;m_CanvasHeight=height;}
     };
 }

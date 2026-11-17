@@ -7,6 +7,7 @@ uniform int reflectionGeometryCount;
 uniform int reflectionReceiverIndex;
 uniform int reflectionProbeIndex;
 uniform vec3 reflectionCapturePosition;
+uniform int reflectionGroundEnabled;
 
 const float reflectionMinDistance = 0.0001;
 const float reflectionMaxDistance = 1000.0;
@@ -153,6 +154,10 @@ vec3 correctedReflectionDirection(vec3 origin, vec3 direction) {
         else if (shape == 3) distance = reflectionSphereHit(localOrigin, localDirection);
         else if (shape == 4 || shape == 5) distance = reflectionRoundSolidHit(localOrigin, localDirection, shape == 5);
         nearest = min(nearest, distance);
+    }
+    if(reflectionGroundEnabled==1 && abs(direction.y)>.000001){
+        float groundDistance=-origin.y/direction.y;
+        if(reflectionPositiveRoot(groundDistance))nearest=min(nearest,groundDistance);
     }
     if (nearest == reflectionMaxDistance) return vec3(0.0);
     vec3 captureDirection = origin + direction * nearest - reflectionCapturePosition;

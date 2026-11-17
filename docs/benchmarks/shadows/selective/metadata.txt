@@ -1,0 +1,22 @@
+GPU: NVIDIA GeForce RTX 4060 Ti/PCIe/SSE2
+OpenGL: 3.3.0 NVIDIA 610.88
+CPU: AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD
+Build: Nov 16 2026 22:12:16
+Main view: 640x360
+Shadow resolution: 512
+Warmup frames: 3
+Measured frames per mode/run: 25
+Repeats: 4
+Filter: 
+Modes: global(previous all-caster revision invalidates every light), selective(previous/current changed bounds invalidate affected lights). Same executable. Both retain shadow culling, depth caching, world/bounds caches, cube instancing and reflection culling.
+Both modes gather the new common flat caster snapshot with bounds/record metadata. Global mode skips per-caster differencing and changed-bounds BVH construction; its changed_casters/changed_bounds/dirty_bvh_builds counters are zero(not a claim that objects are static). Selective tracking/BVH costs are included in the comparison.
+Independent Scene+SceneRenderer+ViewportTarget per mode; no shared shadow or spatial history. Alternating mode order each repeat balances order positions with four repeats. Same deterministic frames replayed per mode. No profiler session.
+Separated point lights: 52-unit cluster spacing, point range20, height12; each caster cluster occupies16x16. 80% cubes/20% rectangles with varied scales/heights/yaw. First10% of objects move within one cluster; distributed mode moves every tenth object across all clusters.
+Point4 has4 separate clusters, point8 has8, mixed8 has1directional+7separate points. Overlap8 places8points over one cluster and forces allaffected; directional1 also forces allaffected. Outside mode moves10% relocated250units beyond all point volumes. Static is a cache-hit control.
+Camera position depends on fixed cluster extent(22/65/115):(.35extent,.9extent,1.3extent), looking at(0,1,0),55degree FOV. Main size remains fixed. Reflection control adds one mirror caster/receiver in cluster0;64x64 probe is forced to capture6faces each frame in both modes.
+First Render per independent mode is recorded as cold; includes lazy GL resources but excludes scene/renderer construction. Warm p50/p95 use nearest-rank quantiles pooled across repeats.
+CPU timing includes deterministic motion, viewport clear/setup, cache validation/BVH maintenance and render submission. Completion waits glFinish. GL_TIME_ELAPSED brackets renderer.Render only(excludes motion/viewport setup), and can include command starvation. Drained before/after each sample; serialized costs, not production FPS.
+Every measured frame validates expected depth maps/faces. Candidates are eligible caster components times actually rendered depth faces; submitted is post-frustum-cull components, not BVH node tests.
+Invalidation counters: changed caster records, previous/current bounds retained for invalidation, caster-affected lights, and changed-bounds BVH builds. Light movement is not part of these workloads.
+Sequential parity frames1,2,7,19,0,23 compare each cached mode against a third independent cache-disabled renderer at identical time. Readback is outside timed workload; tolerance1 channel value. Histories advance independently through all frames, including rewind.
+Completed scenarios: 16

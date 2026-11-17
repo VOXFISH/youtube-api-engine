@@ -2,6 +2,9 @@
 > **Youtube Rice**
 >
 > *유튜브 인터랙티브 게임을 위한 엔진*
+
+> **2026-11-16 상세 명세 반영:** 데이터 저장은 [Data Routing 명세](../../Engine/Data/DataRouting.md)의 메모리·SQLite 구성을 기준으로 한다. 아래의 Redis/PostgreSQL 지정은 이전 설계이며 현재 구현 요구사항이 아니다. 슬롯·방송 설정·송출은 [YouTube 연동 및 스트리밍 명세](YouTubeStreaming.md), 행동 타임라인·명령 문법은 [사이클과 YouTube 명령 명세](CycleAndCommands.md)를 따른다. 충돌하는 항목은 이 세 상세 명세를 우선한다.
+
 ## 1. 문서 개요
 
 ### 1.1 목적

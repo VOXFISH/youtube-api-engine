@@ -73,6 +73,11 @@ class GameObject {
     bool pendingDestroy=false;
     bool pooled=false, poolAvailable=false;
     uint64_t poolGeneration=0;
+    inline static bool worldCacheEnabled=true;
+    mutable bool worldCached=false;
+    mutable Transform cachedTransform;
+    mutable Vector3 cachedPivot{0};
+    mutable Matrix4 cachedParent{1},cachedWorld{1};
     void HierarchyChanged(){if(hierarchyRevision)++*hierarchyRevision;}
 
     template<class F>void NotifyComponents(F fn) {
@@ -173,7 +178,20 @@ public:
         auto relative=common?glm::inverse(common->GetWorldRotation())*base:base;
         return glm::normalize(group->GetWorldRotation()*rotation(groupOffset)*glm::inverse(rotation(groupParentBind))*rotation(groupCommonBind)*relative*local);
     }
-    Matrix4 GetWorldMatrix() const { RICE_BENCHMARK_FUNCTION(); auto p=GetLocalPivot();return GetParentMatrix()*glm::translate(Matrix4(1),p)*transform.GetMatrix()*glm::translate(Matrix4(1),-p);}
+    // Public transform fields remain writable. Compare actual dependencies rather
+    // than relying on hierarchy revisions (which do not track those writes).
+    static void SetWorldCacheEnabled(bool enabled){worldCacheEnabled=enabled;}
+    static bool WorldCacheEnabled(){return worldCacheEnabled;}
+    Matrix4 GetWorldMatrix() const {
+        RICE_BENCHMARK_FUNCTION();
+        auto p=GetLocalPivot();auto base=GetParentMatrix();
+        if(worldCacheEnabled&&worldCached&&cachedParent==base&&cachedPivot==p&&
+           cachedTransform.position==transform.position&&cachedTransform.rotation==transform.rotation&&
+           cachedTransform.localScale==transform.localScale&&cachedTransform.affine==transform.affine)return cachedWorld;
+        auto value=base*glm::translate(Matrix4(1),p)*transform.GetMatrix()*glm::translate(Matrix4(1),-p);
+        if(worldCacheEnabled){cachedParent=base;cachedPivot=p;cachedTransform=transform;cachedWorld=value;worldCached=true;}
+        return value;
+    }
     void SetWorldMatrix(const Matrix4& value){ RICE_BENCHMARK_FUNCTION(); auto base=GetParentMatrix();if(std::abs(glm::determinant(base))<1e-8f)throw std::runtime_error("Singular parent transform");auto p=GetLocalPivot();transform.SetMatrix(glm::translate(Matrix4(1),-p)*glm::inverse(base)*value*glm::translate(Matrix4(1),p));}
     void SetParent(GameObject* value) { RICE_BENCHMARK_FUNCTION(); if(value&&value->owningScene!=owningScene)throw std::invalid_argument("Parent must belong to same scene");if(value&&value->DependsOn(this))throw std::invalid_argument("Hierarchy cycle");if(parent==value)return;if(parent)if(auto* a=parent->GetComponent<Anchor>();a&&a->child==id)a->child=0;parent=value;HierarchyChanged();}
     void SetGroup(GameObject* value,bool preserveWorld=true){

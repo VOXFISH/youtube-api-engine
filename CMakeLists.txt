@@ -89,19 +89,25 @@ if(RICE_BUILD_SANDBOX)
 endif()
 
 include(CTest)
+add_subdirectory(Engine/Data)
+add_subdirectory(Engine/Streaming)
+add_subdirectory(RiceController)
 if(BUILD_TESTING)
     foreach(target RiceInstancingTests RiceInstancingBenchmark)
         if(target STREQUAL "RiceInstancingTests")
             set(source Tests/InstancingTests.cpp)
+            add_executable(${target} ${source})
         else()
-            set(source Tests/InstancingBenchmark.cpp)
+            set(source Tests/Benchmarks/InstancingBenchmark.cpp)
+            add_executable(${target} EXCLUDE_FROM_ALL ${source})
         endif()
-        add_executable(${target} ${source})
         target_link_libraries(${target} PRIVATE RiceCore RiceBuildOptions glm::glm glfw glad::glad)
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:${target}> $<TARGET_FILE_DIR:${target}>
             COMMAND_EXPAND_LISTS)
     endforeach()
+    # GameComponents used by this benchmark bind routed fields backed by RiceData.
+    target_link_libraries(RiceInstancingBenchmark PRIVATE RiceData)
     add_test(NAME CubeInstancing COMMAND RiceInstancingTests)
 endif()
 if(BUILD_TESTING)
@@ -238,5 +244,32 @@ if(BUILD_TESTING)
     add_test(NAME CachedHierarchy COMMAND RiceHierarchyTests "${CMAKE_BINARY_DIR}/TestData/Hierarchy")
     add_custom_command(TARGET RiceHierarchyTests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:RiceHierarchyTests> $<TARGET_FILE_DIR:RiceHierarchyTests>
+        COMMAND_EXPAND_LISTS)
+endif()
+
+if(BUILD_TESTING)
+    foreach(spatial_test SceneSpatial SpatialPhysics ShadowRender ShadowInvalidation PresentationScene)
+        add_executable(Rice${spatial_test}Tests Tests/${spatial_test}Tests.cpp)
+        target_link_libraries(Rice${spatial_test}Tests PRIVATE RiceCore RiceBuildOptions glm::glm glfw glad::glad)
+        add_test(NAME ${spatial_test} COMMAND Rice${spatial_test}Tests)
+        add_custom_command(TARGET Rice${spatial_test}Tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:Rice${spatial_test}Tests> $<TARGET_FILE_DIR:Rice${spatial_test}Tests>
+            COMMAND_EXPAND_LISTS)
+    endforeach()
+    # Manual timing comparison; deliberately not a pass/fail timing test.
+    add_executable(RiceSceneSpatialBenchmark EXCLUDE_FROM_ALL Tests/Benchmarks/SceneSpatialBenchmark.cpp)
+    target_link_libraries(RiceSceneSpatialBenchmark PRIVATE RiceCore RiceBuildOptions glm::glm glfw glad::glad)
+    add_custom_command(TARGET RiceSceneSpatialBenchmark POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:RiceSceneSpatialBenchmark> $<TARGET_FILE_DIR:RiceSceneSpatialBenchmark>
+        COMMAND_EXPAND_LISTS)
+    add_executable(RiceShadowBenchmark EXCLUDE_FROM_ALL Tests/Benchmarks/ShadowBenchmark.cpp)
+    target_link_libraries(RiceShadowBenchmark PRIVATE RiceCore RiceBuildOptions glm::glm glfw glad::glad)
+    add_custom_command(TARGET RiceShadowBenchmark POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:RiceShadowBenchmark> $<TARGET_FILE_DIR:RiceShadowBenchmark>
+        COMMAND_EXPAND_LISTS)
+    add_executable(RiceShadowInvalidationBenchmark EXCLUDE_FROM_ALL Tests/Benchmarks/ShadowInvalidationBenchmark.cpp)
+    target_link_libraries(RiceShadowInvalidationBenchmark PRIVATE RiceCore RiceBuildOptions glm::glm glfw glad::glad)
+    add_custom_command(TARGET RiceShadowInvalidationBenchmark POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:RiceShadowInvalidationBenchmark> $<TARGET_FILE_DIR:RiceShadowInvalidationBenchmark>
         COMMAND_EXPAND_LISTS)
 endif()

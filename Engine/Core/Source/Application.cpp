@@ -11,13 +11,13 @@ namespace Rice
 {
     Application *Application::s_Instance = nullptr;
 
-    Application::Application()
+    Application::Application(const WindowProps& props)
     {
         RICE_BENCHMARK_FUNCTION();
         RICE_CORE_ASSERT(!s_Instance, "Application already exists!");
         s_Instance = this;
 
-        m_Window = Scope<Window>(Window::Create());
+        m_Window = Scope<Window>(Window::Create(props));
         /*
         Window  ??,  ?? ??????? ???        Window? ?  ? ????? ??? ??? ????        m_Window = CreateScope<WindowsWindow>();?  ??.
         ? Window ?? ?? ? WindowsWindow ???
@@ -98,6 +98,7 @@ namespace Rice
                 layer->OnImGuiRender();
             }
 
+            OnFrameRendered();
             m_Window->SwapBuffers();
         }
 

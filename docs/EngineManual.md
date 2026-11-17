@@ -8,12 +8,12 @@ Windows x64 / C++20 / OpenGL 3.3 기반의 작은 2D·3D 게임 제작용 엔진
 
 ## 바로 실행
 
-시연용 편집기: 최상단 `RiceEditor.exe`.
+시연용 편집기: `RiceEditor.exe`. 실행 프로그램과 DLL은 최상단에 있으며, 두 테스트씬과 영상은 `Presentation`에 있다.
 
-- RiceEditor: 프로젝트 없이 빈 편집 창으로 시작한다. **File → Open Project**로 `project.rice` 파일을 선택한다. `TestBuild/Project/project.rice`를 열면 기존 Grass1000 프로젝트를 편집할 수 있다.
+- RiceEditor: 프로젝트 없이 빈 편집 창으로 시작한다. **File → Open Project**로 `Presentation/Grass1000/project.rice` 또는 `Presentation/Steve/project.rice`를 선택한다.
 - RicePlayer: 독립 게임. 실행 파일 옆 Project에서 마지막으로 선택한 씬을 읽고 즉시 플레이한다. 기존 프로젝트의 기본 씬은 main.rice다.
 - DLL은 실행 파일 옆에 둔다. 편집기의 프로젝트는 별도 폴더에서 선택할 수 있고, 독립 플레이어는 기본으로 실행 파일 옆 Project를 읽는다.
-- 기존 자동 시작 편집기는 `TestBuild/RiceSandbox.exe`에 보존되어 있다. 함께 보존한 프로젝트에는 Grass1000과 기본 샘플 씬이 있다.
+- Steve 장면은 **Game → Play**에서 공 방출, 큐브 이동, 섀도맵 갱신과 캐시 재사용을 자동으로 보여 준다. 최상단 `RicePlayer.exe`를 직접 실행하면 Steve 장면이 시작된다. 완성 영상은 `Presentation/Steve/Recordings/Steve-Shadow-Demo-1080p60.mp4`다. 예전 실행본과 프로젝트는 개발 작업 공간의 `Build/legacy-backup/TestBuild`에 보관했다.
 - CLI: `--project <저장된 프로젝트 폴더 또는 project.rice>`, `--export <새 폴더>`, `--smoke`(120프레임 후 종료), `--silent-audio`(FMOD 무음 출력).
 
 ## 함수 실행 시간 측정
@@ -39,7 +39,7 @@ $env:VCPKG_ROOT = 'C:/path/to/vcpkg'
 ./Build.ps1 -FmodRoot 'C:/Program Files (x86)/FMOD SoundSystem/FMOD Studio API Windows'
 ```
 
-최상단 `Build.cmd`도 같은 스크립트를 실행한다. Visual Studio를 탐색하고 구성·빌드·CTest를 완료하면 최상단의 RiceEditor.exe, RicePlayer.exe와 런타임을 갱신한다. 중간 산출물은 Build/local에 생기며 TestBuild 보존본은 변경하지 않는다. 기존 설치 의존성을 재사용하려면 `-InstalledDependencies <vcpkg_installed 절대 경로>`를 지정한다. 최초 vcpkg 의존성 설치에는 네트워크가 필요하다.
+최상단 `Build.cmd`도 같은 스크립트를 실행한다. Visual Studio를 탐색하고 구성·빌드·CTest를 완료하면 저장소 최상단의 RiceEditor.exe, RicePlayer.exe, RiceController.exe와 런타임을 갱신한다. 중간 산출물은 `Build/local`에 생기며 `Presentation/Grass1000`, `Presentation/Steve`의 저장된 장면은 유지한다. 기존 설치 의존성을 재사용하려면 `-InstalledDependencies <vcpkg_installed 절대 경로>`를 지정한다. 최초 vcpkg 의존성 설치에는 네트워크가 필요하다.
 
 FMOD 경로는 CMake의 FMOD_ROOT 캐시 값으로도 지정한다. x64 fmod_vc.lib, fmod.dll, fmod.hpp를 확인하며 SDK가 없으면 구성 단계에서 실패한다. SDK 소스·바이너리는 저장소에 추가하지 않는다. 실제 배포에는 사용 중인 FMOD 라이선스 조건을 적용해야 한다.
 
@@ -438,3 +438,4 @@ Play는 물리·스크립트·애니메이션을 시작한다. 상단 Pause는 �
 Hierarchy의 Scene 선택창 바로 아래에서 씬별 환경을 설정한다. Skybox 토글과 애셋 선택은 파노라마 또는 cubemap atlas 이미지를 사용한다. Default directional light는 별도의 오브젝트 없이 색상·강도·방향을 설정한다. Ground는 y=0의 연한 회색 무한 평면이며, Ground collision을 켜면 활성 Rigidbody와 비 Trigger BoxCollider를 가진 동적 물체를 지지한다. Kinematic은 기존처럼 지정한 이동을 유지한다.
 
 X/Y/Z 축과 XY/YZ/ZX grid는 각각 켜거나 끌 수 있고 Scene 뷰에만 나타난다. Game 뷰, 반사 캡처, 독립 실행 플레이어에는 표시되지 않으며, 내보낸 씬 파일에서는 EditorGrid 설정도 제외된다. 환경 설정은 씬 저장·복제·Undo/Redo·Play/Stop에 함께 반영된다.
+

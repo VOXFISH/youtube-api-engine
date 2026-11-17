@@ -4,15 +4,38 @@
 #include <fmod.hpp>
 #include <fmod_errors.h>
 #include <unordered_map>
+#include <functional>
+#include <span>
+#include <cstring>
 namespace Rice {
 class AudioSystem {
     FMOD::System* system=nullptr;
     std::unordered_map<std::string,FMOD::Sound*> sounds;
+    FMOD::DSP* capture=nullptr;
+    std::function<void(std::span<const float>)> captureSink;
+    static FMOD_RESULT F_CALL CaptureRead(FMOD_DSP_STATE* state,float* input,float* output,unsigned length,int channels,int* outputChannels){
+        if(input && output && channels>0)std::memcpy(output,input,static_cast<std::size_t>(length)*channels*sizeof(float));
+        *outputChannels=channels;
+        void* opaque=nullptr;
+        if(state->functions->getuserdata(state,&opaque)!=FMOD_OK || !opaque)return FMOD_OK;
+        auto& audio=*static_cast<AudioSystem*>(opaque);
+        if(input && channels==2 && audio.captureSink)try{audio.captureSink({input,static_cast<std::size_t>(length)*2});}catch(...){}
+        return FMOD_OK;
+    }
 public:
     static void Check(FMOD_RESULT result){ RICE_BENCHMARK_FUNCTION(); if(result!=FMOD_OK)throw std::runtime_error(FMOD_ErrorString(result));}
-    explicit AudioSystem(bool silent=false){ RICE_BENCHMARK_FUNCTION(); Check(FMOD::System_Create(&system));try{if(silent)Check(system->setOutput(FMOD_OUTPUTTYPE_NOSOUND));Check(system->init(128,FMOD_INIT_NORMAL,nullptr));}catch(...){system->release();system=nullptr;throw;}}
+    explicit AudioSystem(bool silent=false){ RICE_BENCHMARK_FUNCTION(); Check(FMOD::System_Create(&system));try{Check(system->setSoftwareFormat(48000,FMOD_SPEAKERMODE_STEREO,0));if(silent)Check(system->setOutput(FMOD_OUTPUTTYPE_NOSOUND));Check(system->init(128,FMOD_INIT_NORMAL,nullptr));}catch(...){system->release();system=nullptr;throw;}}
     AudioSystem(const AudioSystem&)=delete;
-    ~AudioSystem(){ RICE_BENCHMARK_FUNCTION(); for(auto& [key,sound]:sounds)sound->release();if(system)system->release();}
+    ~AudioSystem(){ RICE_BENCHMARK_FUNCTION(); if(capture){FMOD::ChannelGroup* group=nullptr;if(system->getMasterChannelGroup(&group)==FMOD_OK)group->removeDSP(capture);capture->release();capture=nullptr;}for(auto& [key,sound]:sounds)sound->release();if(system)system->release();}
+    void CaptureGameMix(std::function<void(std::span<const float>)> sink){
+        if(capture)throw std::logic_error("Game audio capture is already installed");
+        captureSink=std::move(sink);
+        FMOD_DSP_DESCRIPTION description{};description.pluginsdkversion=FMOD_PLUGIN_SDK_VERSION;
+        std::memcpy(description.name,"Rice game mix",14);description.numinputbuffers=1;description.numoutputbuffers=1;
+        description.read=CaptureRead;description.userdata=this;
+        Check(system->createDSP(&description,&capture));
+        FMOD::ChannelGroup* group=nullptr;Check(system->getMasterChannelGroup(&group));Check(group->addDSP(FMOD_CHANNELCONTROL_DSP_TAIL,capture));
+    }
     FMOD::Channel* Play(const std::string& path,bool loop,float volume){
         RICE_BENCHMARK_FUNCTION();
         FMOD::Sound* sound=nullptr;auto it=sounds.find(path);if(it!=sounds.end())sound=it->second;

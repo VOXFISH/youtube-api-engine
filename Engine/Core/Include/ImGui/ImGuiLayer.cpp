@@ -71,6 +71,14 @@ namespace Rice
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
+        if(m_CanvasWidth>0 && m_CanvasHeight>0){
+            auto& io=ImGui::GetIO();
+            if(io.DisplaySize.x>0 && io.DisplaySize.y>0){
+                io.MousePos.x*=m_CanvasWidth/io.DisplaySize.x;
+                io.MousePos.y*=m_CanvasHeight/io.DisplaySize.y;
+            }
+            io.DisplaySize={float(m_CanvasWidth),float(m_CanvasHeight)};io.DisplayFramebufferScale={1,1};
+        }
         ImGui::NewFrame();
 
         if (m_ShowDemoWindow)

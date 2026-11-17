@@ -1,0 +1,23 @@
+GPU: NVIDIA GeForce RTX 4060 Ti/PCIe/SSE2
+OpenGL: 3.3.0 NVIDIA 610.88
+CPU: AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD
+Build: Nov 16 2026 21:50:34
+Main view: 640x360
+Shadow resolution: 512
+Warmup frames: 3
+Measured frames per mode/run: 20
+Repeats: 5
+Filter: reflection
+Modes: off; full(no depth caching/no shadow culling); bvh(culling only); cache(depth caching only); optimized(both).
+World-matrix and scene-spatial caches, cube instancing, and reflection culling stay enabled in all modes. No profiler session.
+Shadow culling-off still prepares/refits the scene BVH: culling comparisons isolate query/submission savings and retain BVH maintenance. Shadows-off may skip spatial preparation without a reflection probe; on/off includes this setup cost.
+Mode order per repeat: (repeat + slot) mod 5; same deterministic time sequence per mode. Every five repeats balance all five order positions; defaults give 100 samples per mode.
+Scene: 80x80 world footprint, deterministic grid, 80% cubes/20% rectangles, varied scales/yaw; neutral procedural ground. Directional light intensity .8; point intensity3 range32.
+Objects motion: 10% of casters move every frame. Lights motion: one point light (or sole directional) moves. Camera control changes no geometry/lights.
+Default suite: 100/1000/3000 objects x directional1/point1/mixed4(1dir3point)/mixed8(1dir7point) x static/objects/lights, plus 1000mixed4 camera. Optional static/objects reflection probe64 controls run when matched by a nonempty case filter (e.g. reflection).
+Reflection controls add one mirror caster/receiver and force one six-face probe capture per frame (maxObjectSize=0), keeping probe frequency equal across modes; internal captures share the outer shadow maps.
+CPU includes deterministic motion, viewport setup/clear, scene preparation, cache checks/BVH upkeep and GL submission. Completion waits glFinish. GPU GL_TIME_ELAPSED brackets renderer.Render (excludes viewport setup/clear), and includes GPU command starvation.
+One render is drained before/after each sample; these are serialized workload costs, not production pipelined FPS. Cold row is first Render per scenario (lazy GPU resources/shader), excludes scene/renderer construction.
+Warm p50/p95 are nearest-rank quantiles pooling all repeats. Shadow candidates count eligible caster components times rendered depth faces before BVH filtering; submitted counts surviving caster components. Counters exclude internal BVH node tests.
+Parity compares full shadows with bvh/cache/optimized at identical time; off intentionally differs. Max channel tolerance1.
+Completed scenarios: 2

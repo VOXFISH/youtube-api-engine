@@ -1,6 +1,7 @@
 #pragma once
 #include "Rice/Benchmark.h"
 #include "Scene.h"
+#include "CubeCapture.h"
 #include "Renderer/PerspectiveCamera.h"
 #include <glad/glad.h>
 #include <functional>
@@ -161,8 +162,6 @@ public:
                 glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,depth);
                 allocatedResolution=size;allocatedQuality=quality;
             }
-            const Vector3 directions[]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
-            const Vector3 ups[]={{0,-1,0},{0,-1,0},{0,0,1},{0,0,-1},{0,-1,0},{0,-1,0}};
             auto position=Vector3(probe.GetGameObject().GetWorldMatrix()[3]);
             glDisable(GL_SCISSOR_TEST);glEnable(GL_DEPTH_TEST);glDepthMask(GL_TRUE);
             glViewport(0,0,size,size);glClearColor(0,0,0,1);
@@ -171,7 +170,7 @@ public:
                 glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_CUBE_MAP_POSITIVE_X+face,texture,0);
                 if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)throw std::runtime_error("Reflection framebuffer incomplete");
                 glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-                CaptureCamera camera(position,directions[face],ups[face]);
+                CaptureCamera camera(position,CubeCaptureDirections[face],CubeCaptureUps[face]);
                 draw(camera);
             }
             glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_CUBE_MAP,texture);

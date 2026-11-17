@@ -12,5 +12,11 @@ vcpkg_installed/
 /imgui.ini
 /EditorLayout.ini
 /EditorSettings.txt
-/TestBuild/EditorSettings.txt
+**/EditorLayout.ini
+**/EditorSettings.txt
+/tmp/
+/portability/
+/Presentation/**/preview*.bmp
+/Presentation/**/decoded-*.bmp
+/Presentation/**/*.csv
 /Engine/Dependencies/spdlog/

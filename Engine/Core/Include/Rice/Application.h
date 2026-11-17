@@ -13,7 +13,7 @@ namespace Rice
     class RICE_API Application
     {
     public:
-        Application();
+        explicit Application(const WindowProps& props = WindowProps());
         virtual ~Application();
 
         static Application& Get();
@@ -30,6 +30,7 @@ namespace Rice
         virtual void OnInit() { RICE_BENCHMARK_FUNCTION(); }
         virtual void OnUpdate(Time) { RICE_BENCHMARK_FUNCTION(); }
         virtual void OnRender() { RICE_BENCHMARK_FUNCTION(); }
+        virtual void OnFrameRendered() {}
         virtual void OnShutDown() { RICE_BENCHMARK_FUNCTION(); }
 
     private:

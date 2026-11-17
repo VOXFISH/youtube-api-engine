@@ -26,7 +26,10 @@ if ($LASTEXITCODE) { throw 'CMake configure failed' }
 if ($LASTEXITCODE) { throw 'Build failed' }
 & ctest --test-dir $build -C $Configuration --output-on-failure
 if ($LASTEXITCODE) { throw 'Tests failed' }
-# Install only runtime targets/assets/docs. Existing TestBuild and projects are preserved.
-& cmake --install $build --config $Configuration --prefix $source
+# Place executable builds beside the top-level scene collection.
+$presentationRuntime = $source
+& cmake --install $build --config $Configuration --prefix $presentationRuntime
 if ($LASTEXITCODE) { throw 'Packaging failed' }
-Write-Host "Editor ready: $(Join-Path $source 'RiceEditor.exe')"
+Write-Host "Presentation ready: $(Join-Path $source 'Presentation')"
+Write-Host "Editor ready: $(Join-Path $presentationRuntime 'RiceEditor.exe')"
+Write-Host "Controller ready: $(Join-Path $presentationRuntime 'RiceController.exe')"

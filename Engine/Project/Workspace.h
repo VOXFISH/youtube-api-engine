@@ -124,7 +124,7 @@ public:
         if(scene.settings.skybox&&!scene.settings.skyboxAsset.empty())assets.Resolve(scene.settings.skyboxAsset);
         auto sceneText=SceneCodec(registry).Encode(scene,false);
         fs::create_directories(target);
-        for(auto& file:fs::directory_iterator(binaries))if(file.is_regular_file()&&(file.path().extension()==".dll"||file.path().filename()=="RicePlayer.exe"))fs::copy_file(file.path(),target/file.path().filename());
+        for(auto& file:fs::directory_iterator(binaries))if(file.is_regular_file()&&(file.path().extension()==".dll"||file.path().filename()=="RicePlayer.exe"||file.path().filename()=="RicePlayer.control"))fs::copy_file(file.path(),target/file.path().filename());
         fs::create_directories(target/"Project");fs::copy(root/"Assets",target/"Project"/"Assets",fs::copy_options::recursive);
         for(const auto& sceneFile:SceneFiles()){
             if(sceneFile==activeScene)continue;

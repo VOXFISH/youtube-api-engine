@@ -8,6 +8,11 @@
         "glad",
         "glm",
         {
+            "name": "ffmpeg",
+            "default-features": false,
+            "features": ["avcodec", "avformat", "swresample", "swscale", "nvcodec"]
+        },
+        {
             "name": "imgui",
             "features": [
                 "docking-experimental",

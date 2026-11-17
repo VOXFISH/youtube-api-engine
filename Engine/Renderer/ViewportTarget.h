@@ -10,5 +10,6 @@ public:
     ViewportTarget(const ViewportTarget&)=delete;
     ~ViewportTarget();
     uint32_t Render(int w,int h,const std::function<void()>& draw);
+    uint32_t Framebuffer() const noexcept { return framebuffer; }
 };
 }

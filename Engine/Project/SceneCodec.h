@@ -1,6 +1,7 @@
 #pragma once
 #include "Rice/Benchmark.h"
 #include "Assets.h"
+#include "Streaming/YouTubeListener.h"
 #include <variant>
 namespace Rice {
 using Property=std::variant<bool*,int*,float*,std::string*,Vector2*,Vector3*,Vector4*,ShapeMesh*,EntityID*,TriangleMaterials*>;
@@ -23,13 +24,14 @@ public:
     ComponentType* Find(const std::string& name){ RICE_BENCHMARK_FUNCTION(); for(auto& t:types)if(t.name==name)return &t;return nullptr;}
     ComponentRegistry(){
         RICE_BENCHMARK_FUNCTION();
-        Register<MeshRenderer>("MeshRenderer",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Shape",&c.shape);f("Custom mesh",&c.custom);f("Shape asset",&c.shapeAsset);f("Triangle materials",&c.triangleMaterials);});
+        Register<MeshRenderer>("MeshRenderer",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Shape",&c.shape);f("Custom mesh",&c.custom);f("Shape asset",&c.shapeAsset);f("Triangle materials",&c.triangleMaterials);f("Cast shadows",&c.castsShadow);});
         Register<CameraComponent>("Camera",[](auto& c,auto& f){f("Primary",&c.primary);f("Field of view",&c.fieldOfView);f("Near clip",&c.nearClip);f("Far clip",&c.farClip);});
         Register<CameraFollower>("Camera Follower",[](auto& c,auto& f){f("Camera",&c.camera);f("Translation",&c.transform.position);f("Rotation",&c.transform.rotation);f("Scale",&c.transform.localScale);f("Show in Shape Editor",&c.showInEditor);});
         Register<Anchor>("Anchor",[](auto& c,auto& f){f("Child",&c.child);f("Translation",&c.transform.position);f("Rotation",&c.transform.rotation);f("Scale",&c.transform.localScale);f("Show in Shape Editor",&c.showInEditor);});
         Register<ObjectScript>("ObjectScript",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Script file",&c.scriptFile); });
         Register<SingletonManager>("SingletonManager",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Script file",&c.scriptFile); });
         Register<BlankScript>("BlankScript",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Script file",&c.scriptFile); });
+        Register<YouTubeListener>("YouTube Listener",[](auto& c,auto& f){f("Command bindings",&c.commandBindings);});
         Register<ReflectionProbe>("ReflectionProbe",[](auto& c,auto& f){
             RICE_BENCHMARK_FUNCTION();
             f("Cubemap resolution",&c.resolution);
@@ -43,8 +45,8 @@ public:
             f("Roughness",&c.roughness);
             f("Albedo asset",&c.albedoAsset);
         });
-        Register<SpriteRenderer>("SpriteRenderer",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Image asset",&c.asset);});
-        Register<Light>("Light",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Intensity",&c.intensity);f("Direction",&c.direction);f("Type",&c.type);f("Range",&c.range);});
+        Register<SpriteRenderer>("SpriteRenderer",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Image asset",&c.asset);f("Cast shadows",&c.castsShadow);});
+        Register<Light>("Light",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Intensity",&c.intensity);f("Direction",&c.direction);f("Type",&c.type);f("Range",&c.range);f("Cast shadows",&c.castsShadow);});
         Register<BoxCollider>("BoxCollider",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Center",&c.center);f("Size",&c.size);f("Trigger",&c.isTrigger);});
         Register<Rigidbody>("Rigidbody",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Velocity",&c.velocity);f("Mass",&c.mass);f("Restitution",&c.restitution);f("Gravity",&c.useGravity);f("Kinematic",&c.kinematic);});
         Register<SpriteAnimator>("SpriteAnimator",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Columns",&c.columns);f("Rows",&c.rows);f("Frames",&c.frames);f("FPS",&c.fps);f("Loop",&c.loop);f("Playing",&c.playing);});
@@ -81,6 +83,10 @@ struct ComponentSnapshot {
             if(!type)throw std::runtime_error("Component is not registered: "+value.type);
             auto& component=type->add(object);std::istringstream input(value.data);
             type->fields(component,[&](const char* key,Property property){
+                if(std::string_view(key)=="Cast shadows"){
+                    if(!input.eof())input>>std::ws;
+                    if(input.eof()){*std::get<bool*>(property)=true;return;}
+                }
                 if((type->name=="ObjectScript"||type->name=="BlankScript"||type->name=="SingletonManager")&&std::string_view(key)=="Script file"){
                     input>>std::ws;if(input.eof()){std::get<std::string*>(property)->clear();return;}
                 }
@@ -153,11 +159,16 @@ public:
                     if(!in)throw std::runtime_error("Truncated MeshRenderer");
                     in.seekg(position);
                     // Scenes saved before basic shapes contain only Enabled and Color.
-                    if(next=="EndComponent"||(std::string_view(key)=="Shape"&&next=="Custom mesh")||(std::string_view(key)=="Custom mesh"&&next=="Shape asset")||(std::string_view(key)=="Shape asset"&&next=="Triangle materials"))return;
+                    if(next=="EndComponent"||next=="Cast shadows"||(std::string_view(key)=="Shape"&&next=="Custom mesh")||(std::string_view(key)=="Custom mesh"&&next=="Shape asset")||(std::string_view(key)=="Shape asset"&&next=="Triangle materials"))return;
                 }
                 if((typeName=="ObjectScript"||typeName=="BlankScript"||typeName=="SingletonManager")&&std::string_view(key)=="Script file"){
                     auto position=in.tellg();std::string next;in>>std::quoted(next);
                     if(!in)throw std::runtime_error("Truncated script component");
+                    in.seekg(position);if(next=="EndComponent")return;
+                }
+                if(std::string_view(key)=="Cast shadows"){
+                    auto position=in.tellg();std::string next;in>>std::quoted(next);
+                    if(!in)throw std::runtime_error("Truncated shadow setting");
                     in.seekg(position);if(next=="EndComponent")return;
                 }
                 Expect(in,key);ReadProperty(in,p);});Expect(in,"EndComponent");}if(token!="EndObject")throw std::runtime_error("Truncated object");

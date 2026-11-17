@@ -1,5 +1,6 @@
 #pragma once
 #include "Scene.h"
+#include "ShadowMaps.h"
 #include "Renderer/Camera.h"
 #include "Renderer/Shader.h"
 #include "Renderer/Texture.h"
@@ -10,7 +11,7 @@ namespace Rice {
 class EnvironmentRenderer {
     Ref<Shader> shader;
 public:
-    void Draw(Scene& scene,const Camera& camera,const Ref<VertexArray>& quad,bool guides){
+    void Draw(Scene& scene,const Camera& camera,const Ref<VertexArray>& quad,bool guides,const ShadowMaps* shadows=nullptr){
         const auto& s=scene.settings;
         bool sky=s.skybox&&scene.skyboxTexture;
         if(!sky&&!s.ground&&!guides)return;
@@ -18,12 +19,33 @@ public:
 layout(location=0) in vec3 position;
 out vec2 screen;
 void main(){screen=position.xy*2.0;gl_Position=vec4(screen,0,1);}
-)",R"(#version 330 core
+)",std::string(R"(#version 330 core
+)")+ShadowVisibilityGLSL+R"(
 in vec2 screen;out vec4 result;
 uniform mat4 inverseVP,viewProjection;
 uniform int skyEnabled,groundEnabled,skyLayout;
 uniform vec3 axes,grids;
 uniform sampler2D skyImage;
+uniform int groundLightCount,groundLightType[8];
+uniform vec3 groundLightColor[8],groundLightDirection[8];
+uniform vec4 groundLightPositionRange[8];
+float groundVisibility(vec3 position){
+    // Preserve the established neutral ground as a shadow catcher. Ambient and
+    // unoccluded lights remain visible, and no-light scenes retain the old look.
+    float total=.15,visible=.15;
+    for(int i=0;i<groundLightCount;++i){
+        vec3 light=-groundLightDirection[i];float attenuation=1.;
+        if(groundLightType[i]==0){
+            vec3 offset=groundLightPositionRange[i].xyz-position;float distance=length(offset);
+            light=offset/max(distance,.0001);
+            float falloff=max(1.-distance/max(groundLightPositionRange[i].w,.001),0.);
+            attenuation=falloff*falloff;
+        }
+        float weight=dot(max(groundLightColor[i],vec3(0)),vec3(.2126,.7152,.0722))*max(light.y,0.)*attenuation;
+        total+=weight;visible+=weight*shadowVisibility(i,position,vec3(0,1,0));
+    }
+    return visible/total;
+}
 vec2 skyUV(vec3 d){
     if(skyLayout==0)return vec2(atan(d.z,d.x)/6.2831853+.5,asin(clamp(d.y,-1.,1.))/3.14159265+.5);
     vec3 a=abs(d);int face;vec2 uv;
@@ -45,7 +67,7 @@ void main(){
     float best=1.;float depth=1.;bool visible=skyEnabled==1;
     if(groundEnabled==1&&abs(ray.y)>.000001){
         float t=-origin.y/ray.y;
-        if(t>=0.&&t<=1.){best=t;depth=depthAt(origin+ray*t);color=vec3(.72);visible=true;}
+        if(t>=0.&&t<=1.){vec3 point=origin+ray*t;best=t;depth=depthAt(point);color=vec3(.72*groundVisibility(point));visible=true;}
     }
     // XY, YZ and ZX planes. Axis colors: X red, Y green, Z blue.
     for(int plane=0;plane<3;++plane){
@@ -76,6 +98,20 @@ void main(){
         bool depthTest=glIsEnabled(GL_DEPTH_TEST),cull=glIsEnabled(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glDepthMask(GL_TRUE);glDisable(GL_CULL_FACE);
         shader->Bind();shader->SetUniformMat4("inverseVP",glm::inverse(camera.GetVPMatrix()));shader->SetUniformMat4("viewProjection",camera.GetVPMatrix());
+        shader->SetUniformInt("shadowMap",3);
+        if(shadows){
+            shadows->Bind(shader);
+            const auto& lights=shadows->Lights();
+            const int count=static_cast<int>(std::min(lights.size(),size_t(8)));
+            shader->SetUniformInt("groundLightCount",count);
+            for(int i=0;i<count;++i){
+                auto suffix="["+std::to_string(i)+"]";
+                shader->SetUniformInt("groundLightType"+suffix,lights[i].type);
+                shader->SetUniformFloat3("groundLightColor"+suffix,lights[i].color);
+                shader->SetUniformFloat3("groundLightDirection"+suffix,lights[i].direction);
+                shader->SetUniformFloat4("groundLightPositionRange"+suffix,Vector4(lights[i].position,lights[i].range));
+            }
+        }else{shader->SetUniformInt("shadowLightCount",0);shader->SetUniformInt("groundLightCount",0);}
         shader->SetUniformInt("skyEnabled",sky);shader->SetUniformInt("groundEnabled",s.ground);shader->SetUniformInt("skyImage",0);
         shader->SetUniformFloat3("axes",guides?s.axes:Vector3(0));shader->SetUniformFloat3("grids",guides?s.grids:Vector3(0));
         if(sky){scene.skyboxTexture->Bind(0);shader->SetUniformInt("skyLayout",int(DetectCubemapLayout(scene.skyboxTexture->GetWidth(),scene.skyboxTexture->GetHeight())));}

@@ -13,6 +13,7 @@
 #include "ShapeEditor.h"
 #include "PivotAnchorUI.h"
 #include "BenchmarkPanel.h"
+#include "StreamingPanel.h"
 #include "Platform/FileDialog.h"
 #include <fstream>
 #include <iomanip>
@@ -63,6 +64,7 @@ class SceneInspector {
     bool gameFocused=false;
     bool benchmarkOpen=false;
     BenchmarkPanel benchmarkPanel;
+    StreamingPanel streamingPanel;
     bool autoScrollLogs=true;
     uint64_t lastLogSequence=0;
     std::string layoutPath,scriptEditor,editorSettingsPath;
@@ -478,7 +480,7 @@ class SceneInspector {
         return name=="ObjectScript"||name=="BlankScript"||name=="SingletonManager";
     }
     static const char* ComponentCategory(const std::string& name){
-        if(IsBuiltinScript(name)||name=="PlayerController")return "Scripts";
+        if(IsBuiltinScript(name)||name=="PlayerController"||name=="YouTube Listener")return "Scripts";
         if(name=="MeshRenderer"||name=="SpriteRenderer"||name=="Material"||name=="Light"||name=="ReflectionProbe")return "Rendering";
         if(name=="Camera"||name=="Camera Follower")return "Camera";
         if(name=="BoxCollider"||name=="Rigidbody")return "Physics";
@@ -547,11 +549,13 @@ class SceneInspector {
         ImGui::MenuItem("Scene",nullptr,&sceneOpen);ImGui::MenuItem("Game",nullptr,&gameOpen);
         ImGui::MenuItem("Project",nullptr,&projectOpen);ImGui::MenuItem("Console",nullptr,&consoleOpen);
         ImGui::MenuItem("Input",nullptr,&inputOpen);ImGui::MenuItem("Benchmark",nullptr,&benchmarkOpen);
+        streamingPanel.DrawWindowSettingsMenu();
         if(ImGui::MenuItem("Save layout"))ImGui::SaveIniSettingsToDisk(layoutPath.c_str());
         if(ImGui::MenuItem("Reset layout")){resetLayout=true;hierarchyOpen=inspectorOpen=projectOpen=consoleOpen=inputOpen=sceneOpen=gameOpen=true;}
         ImGui::EndMenu();
     }
     void DrawOptions(Workspace& w){
+        streamingPanel.DrawSettingsMenu();
         if(ImGui::BeginMenu("Options")){
             if(ImGui::BeginMenu("Script editor")){
                 ImGui::TextWrapped("%s",scriptEditor.empty()?"System default":scriptEditor.c_str());
@@ -636,6 +640,7 @@ public:
         ImGuiID dock=ImGui::DockSpaceOverViewport(ImGui::GetID("RiceDockSpace"),ImGui::GetMainViewport());
         if(resetLayout){DefaultLayout(dock);resetLayout=false;}
         benchmarkPanel.Draw(benchmarkOpen);
+        streamingPanel.Draw(w.project->root,SceneLabel(w.project->ActiveScene()),*w.editor.scene,w.editor.selected,[&]{if(w.editor.selected)BeginObjectEdit(w,w.editor.selected);});
         gameFocused=false;sceneDrawn=false;
         View(w,"Scene",sceneOpen,sceneTarget,false,render);View(w,"Game",gameOpen,gameTarget,true,render);
         if(!sceneDrawn){gizmo.Cancel(w.editor);cameraGesture.Cancel();wheelGesture.Cancel();}
@@ -796,6 +801,14 @@ public:
                                 EditValue(*std::get<float*>(p),beforeEdit,[](float& next){return ImGui::DragFloat("Flat reflection below (px)",&next,1.f,0.f,100000.f,"%.0f px",ImGuiSliderFlags_AlwaysClamp);});
                             else if(type.name=="MeshRenderer"&&std::string_view(name)=="Shape asset"){
                                 auto& path=obj->GetComponent<MeshRenderer>()->shapeAsset;if(!path.empty())ImGui::TextWrapped("Shape asset: %s",path.c_str());
+                            }
+                            else if(type.name=="YouTube Listener"&&std::string_view(name)=="Command bindings"){
+                                auto* listener=obj->GetComponent<YouTubeListener>();
+                                std::vector<std::string> diagnostics;
+                                auto bindings=listener->BuildBindings(&diagnostics);
+                                ImGui::Text("YouTube commands: %zu",bindings.size());
+                                for(const auto& binding:bindings)ImGui::TextWrapped("%s -> %s",binding.pattern.Text().c_str(),binding.pattern.Function().functionId.c_str());
+                                for(const auto& message:diagnostics)ImGui::TextWrapped("%s",message.c_str());
                             }
                             else DrawProperty(name,p,beforeEdit);
                         });

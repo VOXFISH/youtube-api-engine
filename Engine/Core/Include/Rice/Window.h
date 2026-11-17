@@ -16,11 +16,13 @@ namespace Rice
         std::string Title;
         unsigned int Width;
         unsigned int Height;
+        bool Visible;
 
         WindowProps(const std::string& title = "Rice",
             unsigned int width = 1920,
-            unsigned int height = 1080)
-            : Title(title), Width(width), Height(height)
+            unsigned int height = 1080,
+            bool visible = true)
+            : Title(title), Width(width), Height(height), Visible(visible)
         {
             RICE_BENCHMARK_FUNCTION();
         }

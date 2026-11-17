@@ -28,3 +28,4 @@
     #include "Rice/EntryPoint.h"
 #endif
 #include "Scene/Scene.h"
+#include "Streaming/StreamReadiness.h"
