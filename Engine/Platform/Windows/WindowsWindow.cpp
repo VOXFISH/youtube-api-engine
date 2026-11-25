@@ -98,6 +98,8 @@ namespace Rice
                 RICE_BENCHMARK_FUNCTION();
                 WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
                 WindowCloseEvent event;
+                // The application may keep the window open while the user saves.
+                glfwSetWindowShouldClose(window, GLFW_FALSE);
                 if (data.EventCallback) data.EventCallback(event);
             }
         );

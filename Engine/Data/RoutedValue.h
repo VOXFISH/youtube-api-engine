@@ -39,7 +39,7 @@ public:
         mainSlot_ = std::move(nextSlot); ++generation_;
     }
 };
-template<Encodable T> class Routed {
+template<Routable T> class Routed {
     IDataStore* store_ = nullptr;
     GlobalFallback* global_ = nullptr;
     DataRecord defaults_;

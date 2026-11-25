@@ -51,13 +51,28 @@ public:
     }
     void SaveCycle() {
         if (root_.empty()) throw std::runtime_error("Open a project before saving streaming settings");
-        cycle_.Save(root_ / "Streaming" / "cycle.json"); dirtyCycle_ = false;
+        cycle_.Save(root_ / "Settings" / "Streaming" / "cycle.json"); dirtyCycle_ = false;
+    }
+    bool HasUnsavedChanges()const{return dirtyCycle_||(hasDraft_&&originalDraft_!=draft_);}
+    void SaveBeforeClose(Scene& scene){
+        if(hasDraft_&&originalDraft_!=draft_){
+            auto* object=scene.Find(draftObject_);
+            auto* listener=object?object->GetComponent<YouTubeListener>():nullptr;
+            if(!listener)throw std::runtime_error("The selected YouTube Listener is unavailable.");
+            SaveDraft(scene,*listener,{});
+        }
+        if(dirtyCycle_)SaveCycle();
+    }
+    void CloseProject(){
+        StopPreview();root_.clear();sceneKey_.clear();sceneInstance_=0;draftObject_=0;
+        hasDraft_=dirtyCycle_=false;cycle_=Streaming::CycleDefinition{};error_.clear();
     }
     void SaveCommands(Scene& scene) {
         using Json = Serialization::Json;
-        auto path = root_ / "Streaming" / "commands.json";
+        auto path = root_ / "Settings" / "Streaming" / "commands.json";
+        auto previous = SettingsFile("commands.json");
         Json::Object scenes;
-        if (std::filesystem::exists(path)) scenes = ReadJson(path).At("scenes").Fields();
+        if (std::filesystem::exists(previous)) scenes = ReadJson(previous).At("scenes").Fields();
         Json::Array rows;
         for (const auto& object : scene.GetObjects()) if (auto* listener = object->GetComponent<YouTubeListener>())
             rows.push_back(Json::Object{{"object", object->GetID()}, {"bindings", listener->commandBindings}});
@@ -128,6 +143,7 @@ private:
     std::uint64_t sceneInstance_ = 0;
     EntityID draftObject_ = 0;
     Config draft_;
+    std::optional<Config> originalDraft_;
     bool hasDraft_ = false, dirtyCycle_ = false;
     std::string selectedAction_, selectedFunction_, testInput_ = "!회피 좌 3칸", commandResult_, error_;
     std::uint64_t nextId_ = 1;
@@ -155,6 +171,10 @@ private:
         if (!input) throw std::runtime_error("Cannot open streaming settings");
         return Json::Parse(std::string((std::istreambuf_iterator<char>(input)), {}));
     }
+    std::filesystem::path SettingsFile(const char* name) const {
+        auto current=root_/"Settings"/"Streaming"/name;
+        return std::filesystem::exists(current)?current:root_/"Streaming"/name;
+    }
     void Synchronize(const std::filesystem::path& root, const std::string& sceneKey, Scene& scene) {
         const bool projectChanged = root_ != root;
         const bool hadProject = !root_.empty();
@@ -163,12 +183,12 @@ private:
         StopPreview(); hasDraft_ = false; draftObject_ = 0;
         root_ = root; sceneKey_ = sceneKey; sceneInstance_ = scene.GetInstanceID();
         if (projectChanged) {
-            auto path = root_ / "Streaming" / "cycle.json";
+            auto path = SettingsFile("cycle.json");
             if (std::filesystem::exists(path)) cycle_.Load(path);
             else if (hadProject) cycle_ = Streaming::CycleDefinition{};
             dirtyCycle_ = false;
         }
-        auto path = root_ / "Streaming" / "commands.json";
+        auto path = SettingsFile("commands.json");
         if (std::filesystem::exists(path)) {
             auto rootValue = ReadJson(path);
             if (rootValue.At("schema").Integer() != 1) throw std::runtime_error("Unsupported command settings schema");
@@ -185,6 +205,20 @@ private:
                 for (auto& [listener, configuration] : updates) listener->commandBindings = std::move(configuration);
             }
         }
+    }
+    void SaveDraft(Scene& scene,YouTubeListener& listener,const std::function<void()>& beforeEdit){
+        const auto& catalog=listener.RegisteredBindings();
+        auto prototype=std::find_if(catalog.begin(),catalog.end(),[&](const auto& binding){return binding.pattern.Function().functionId==draft_.functionId;});
+        if(prototype==catalog.end())throw std::runtime_error("Select a registered YouTube command function.");
+        prototype->pattern.WithPattern(draft_.pattern);
+        auto overrides=YouTubeListener::DecodeBindings(listener.commandBindings);
+        auto existing=std::find_if(overrides.begin(),overrides.end(),[&](const auto& row){return row.bindingId==draft_.bindingId;});
+        if(existing==overrides.end())overrides.push_back(draft_);else *existing=draft_;
+        auto encoded=YouTubeListener::EncodeBindings(overrides);
+        if(beforeEdit)beforeEdit();
+        listener.commandBindings.swap(encoded);
+        try{SaveCommands(scene);}catch(...){listener.commandBindings.swap(encoded);throw;}
+        originalDraft_=draft_;
     }
     static std::vector<Config> Rows(const YouTubeListener& listener) {
         auto overrides = YouTubeListener::DecodeBindings(listener.commandBindings);
@@ -235,14 +269,14 @@ private:
                 ImGui::BeginChild("Commands", {300, -150}, ImGuiChildFlags_Borders);
                 for (const auto& row : rows) {
                     std::string label = (row.enabled ? "" : "[off] ") + row.pattern + "##" + row.bindingId;
-                    if (ImGui::Selectable(label.c_str(), hasDraft_ && draft_.bindingId == row.bindingId)) { draft_ = row; hasDraft_ = true; }
+                    if (ImGui::Selectable(label.c_str(), hasDraft_ && draft_.bindingId == row.bindingId)) { draft_ = row;originalDraft_=row; hasDraft_ = true; }
                 }
                 ImGui::BeginDisabled(listener->RegisteredBindings().empty());
                 if (ImGui::Button("Add command")) {
                     const auto& prototype = listener->RegisteredBindings().front();
                     draft_ = {"manual-" + std::to_string(nextId_++), prototype.pattern.Function().functionId,
                         prototype.pattern.Text(), true, rows.size(), "LocalAdmin", {}};
-                    hasDraft_ = true;
+                    originalDraft_.reset();hasDraft_ = true;
                 }
                 ImGui::EndDisabled();
                 ImGui::EndChild(); ImGui::SameLine();
@@ -280,15 +314,7 @@ private:
                         }
                     }
                     ImGui::BeginDisabled(prototype == catalog.end());
-                    if (ImGui::Button("Apply and save")) Guard([&] {
-                        prototype->pattern.WithPattern(draft_.pattern);
-                        auto overrides = YouTubeListener::DecodeBindings(listener->commandBindings);
-                        auto existing = std::find_if(overrides.begin(), overrides.end(), [&](const auto& row) { return row.bindingId == draft_.bindingId; });
-                        if (existing == overrides.end()) overrides.push_back(draft_); else *existing = draft_;
-                        auto encoded = YouTubeListener::EncodeBindings(overrides);
-                        if (beforeEdit) beforeEdit();
-                        listener->commandBindings = std::move(encoded); SaveCommands(scene);
-                    });
+                    if (ImGui::Button("Apply and save")) Guard([&] {SaveDraft(scene,*listener,beforeEdit);});
                     ImGui::EndDisabled();
                     ImGui::SameLine();
                     if (ImGui::Button("Restore script binding")) Guard([&] {

@@ -1,6 +1,7 @@
 #pragma once
 #include "Rice/Benchmark.h"
 #include "Project/Workspace.h"
+#include "Project/Installation.h"
 #include "EditorEditUI.h"
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -14,6 +15,7 @@
 #include "PivotAnchorUI.h"
 #include "BenchmarkPanel.h"
 #include "StreamingPanel.h"
+#include "ScriptPanel.h"
 #include "Platform/FileDialog.h"
 #include <fstream>
 #include <iomanip>
@@ -47,8 +49,18 @@ public:
     }
 };
 class SceneInspector {
+public:
+    enum class CloseResult {None,CloseProject,Exit};
+private:
     friend struct SceneInspectorTestAccess;
-    std::string projectPath="NewProject",importPath,renamePath,exportPath="GameExport";
+    enum class ProjectAction {Close,Exit,Open,New};
+    struct PendingProject {ProjectAction action;fs::path path;};
+    std::optional<PendingProject> pendingProject;
+    bool confirmingClose=false;
+    std::string closeError;
+    std::string newProjectName,projectLocation,renamePath,exportPath;
+    fs::path installRoot,exportProject;
+    bool requestNewProject=false;
     EditorSession::EditSnapshot interactionSnapshot;
     EntityID interactionObject=0;
     uint64_t interactionScene=0;
@@ -65,6 +77,7 @@ class SceneInspector {
     bool benchmarkOpen=false;
     BenchmarkPanel benchmarkPanel;
     StreamingPanel streamingPanel;
+    ScriptPanel scriptPanel;
     bool autoScrollLogs=true;
     uint64_t lastLogSequence=0;
     std::string layoutPath,scriptEditor,editorSettingsPath;
@@ -130,6 +143,15 @@ class SceneInspector {
         RICE_BENCHMARK_FUNCTION();
         auto utf8=path.generic_u8string();
         return {utf8.begin(),utf8.end()};
+    }
+    static fs::path AvailableBuildFile(fs::path requested){
+        auto stem=requested.stem().wstring();
+        auto candidate=requested;
+        std::error_code error;
+        for(unsigned copy=2;fs::exists(candidate,error)&&!error;++copy){
+            candidate=requested.parent_path()/(stem+L" ("+std::to_wstring(copy)+L").exe");
+        }
+        return candidate;
     }
     void ResetSceneInteraction(Workspace& w){
         RICE_BENCHMARK_FUNCTION();
@@ -287,6 +309,12 @@ class SceneInspector {
             if(glm::length(keyboardInput)>0){editorCamera.Move(keyboardInput,io.DeltaTime);changed=true;}
         }return changed;
     }
+    bool DragSceneCameraOrbit(const Scene& scene,const CameraWheelGesture::Result& wheel){
+        RICE_BENCHMARK_FUNCTION();
+        if(!wheel.captured||wheel.orbitDelta==Vector2(0))return false;
+        editorCamera.Orbit(scene.Find(orbitTarget)?orbitPivot:Vector3(0),wheel.orbitDelta);
+        return true;
+    }
     void View(Workspace& w,const char* name,bool& open,ViewportTarget& target,bool game,const std::function<Matrix4(int,int,bool)>& render){
         RICE_BENCHMARK_FUNCTION();
         if(!open)return;
@@ -315,10 +343,8 @@ class SceneInspector {
                         orbitTarget=GizmoMath::Pick(*w.editor.scene,GizmoMath::ScreenRay({crosshair.x,crosshair.y},{origin.x,origin.y},{size.x,size.y},viewProjection),false,true);
                         if(auto* obj=w.editor.scene->Find(orbitTarget)){auto [low,high]=GizmoMath::PrimitiveBounds(*obj);orbitPivot=Vector3(obj->GetWorldMatrix()*Vector4((low+high)*.5f,1));}
                     }
-                    bool orbitChanged=wheel.captured&&glm::length(wheel.orbitDelta)>0&&w.editor.scene->Find(orbitTarget);
-                    if(orbitChanged)editorCamera.Orbit(orbitPivot,wheel.orbitDelta);
                     float wheelZoom=canvasHovered&&!blocked&&!wheel.captured?io.MouseWheel:0;
-                    if(orbitChanged)target.Render(width,height,[&]{ RICE_BENCHMARK_FUNCTION(); viewProjection=render(width,height,game);});
+                    if(DragSceneCameraOrbit(*w.editor.scene,wheel))target.Render(width,height,[&]{ RICE_BENCHMARK_FUNCTION(); viewProjection=render(width,height,game);});
                     bool wheelCaptured=wheel.captured||wheelZoom!=0;
                     if(wheelCaptured){gizmo.Cancel(w.editor);cameraGesture.Cancel();}
                     if(wheel.toggle){moveView=!moveView;moveObject=!moveView;}
@@ -368,7 +394,7 @@ class SceneInspector {
     void Shortcuts(Workspace& w){
         RICE_BENCHMARK_FUNCTION();
         auto& io=ImGui::GetIO();
-        if(w.editor.playing||shapeEditor.Focused()||shapeEditor.Editing()||io.WantTextInput||ImGui::IsAnyItemActive()||gizmo.Active()||ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel))return;
+        if(w.editor.playing||scriptPanel.Focused()||shapeEditor.Focused()||shapeEditor.Editing()||io.WantTextInput||ImGui::IsAnyItemActive()||gizmo.Active()||ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel))return;
         auto pressed=[](ImGuiKey key){ RICE_BENCHMARK_FUNCTION(); return ImGui::IsKeyPressed(key,false);};
         bool command=io.KeyCtrl&&(pressed(ImGuiKey_Z)||pressed(ImGuiKey_Y)||pressed(ImGuiKey_X)||pressed(ImGuiKey_C)||pressed(ImGuiKey_V)||pressed(ImGuiKey_T)||pressed(ImGuiKey_G));
         bool remove=!io.KeyCtrl&&!io.KeyAlt&&!io.KeySuper&&(pressed(ImGuiKey_Delete)||pressed(ImGuiKey_Backspace));
@@ -472,15 +498,12 @@ class SceneInspector {
             if(ImGui::MenuItem("Copy component"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); clipboard.CopyComponent(obj,name,w.registry);});
             if(ImGui::MenuItem("Copy all components"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); clipboard.CopyAllComponents(obj,w.registry);});
             if(ImGui::MenuItem("Paste component(s)",nullptr,false,clipboard.HasComponents()))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); BeginObjectEdit(w,obj.GetID());clipboard.PasteComponents(obj,w.registry);});
-            if(ImGui::MenuItem("Delete component",nullptr,false,name!="Transform"))if(auto* type=w.registry.Find(name)){BeginObjectEdit(w,obj.GetID());type->remove(obj);}
+            if(ImGui::MenuItem(MonkeyScriptKind(name)?"Delete Monkey Script":"Delete component",nullptr,false,name!="Transform"))if(auto* type=w.registry.Find(name)){BeginObjectEdit(w,obj.GetID());type->remove(obj);}
             ImGui::EndDisabled();ImGui::EndPopup();
         }
     }
-    static bool IsBuiltinScript(const std::string& name){
-        return name=="ObjectScript"||name=="BlankScript"||name=="SingletonManager";
-    }
     static const char* ComponentCategory(const std::string& name){
-        if(IsBuiltinScript(name)||name=="PlayerController"||name=="YouTube Listener")return "Scripts";
+        if(MonkeyScriptKind(name)||name=="PlayerController"||name=="YouTube Listener")return "Scripts";
         if(name=="MeshRenderer"||name=="SpriteRenderer"||name=="Material"||name=="Light"||name=="ReflectionProbe")return "Rendering";
         if(name=="Camera"||name=="Camera Follower")return "Camera";
         if(name=="BoxCollider"||name=="Rigidbody")return "Physics";
@@ -504,12 +527,20 @@ class SceneInspector {
             ImGui::SameLine();ImGui::BeginDisabled(name=="Transform");
             if(ImGui::Button("-",{26,height}))if(auto* type=w.registry.Find(name)){BeginObjectEdit(w,obj.GetID());type->remove(obj);}
             ImGui::EndDisabled();
-            ImGui::SetItemTooltip(name=="Transform"?"Transform is required":"Detach component");
+            ImGui::SetItemTooltip(name=="Transform"?"Transform is required":MonkeyScriptKind(name)?"Detach Monkey Script":"Detach component");
             ImGui::PopStyleVar();
             if(ImGui::BeginPopup("Add component")){
                 for(auto category:{"Rendering","Camera","Physics","Scripts","UI","Audio","Animation","Other"}){
                     if(ImGui::BeginMenu(category)){
-                        for(auto& type:w.registry.types)if(std::string_view(ComponentCategory(type.name))==category){
+                        if(std::string_view(category)=="Scripts"&&ImGui::BeginMenu("Monkey Script")){
+                            for(auto& type:w.registry.types)if(MonkeyScriptKind(type.name)){
+                                const bool attached=type.get(obj)!=nullptr;
+                                if(ImGui::MenuItem(MonkeyScriptKind(type.name),nullptr,attached,!attached))
+                                    Guard(w,[&]{BeginObjectEdit(w,obj.GetID());type.add(obj);});
+                            }
+                            ImGui::EndMenu();
+                        }
+                        for(auto& type:w.registry.types)if(!MonkeyScriptKind(type.name)&&std::string_view(ComponentCategory(type.name))==category){
                             bool attached=type.get(obj)!=nullptr;
                             if(ImGui::MenuItem(type.name.c_str(),nullptr,attached,!attached))Guard(w,[&]{BeginObjectEdit(w,obj.GetID());type.add(obj);});
                         }
@@ -530,16 +561,20 @@ class SceneInspector {
         ImGui::EndDisabled();
     }
     void SaveEditorSettings(){
-        std::ofstream out(editorSettingsPath);
+        std::ofstream out(fs::u8path(editorSettingsPath));
         if(!out||!(out<<std::quoted(scriptEditor)))throw std::runtime_error("Cannot save editor settings");
     }
     void InitializeLayout(const fs::path& binaries){
         RICE_BENCHMARK_FUNCTION();
         if(layoutInitialized)return;
-        layoutPath=(binaries/"EditorLayout.ini").string();
-        if(fs::exists(layoutPath))ImGui::LoadIniSettingsFromDisk(layoutPath.c_str());else resetLayout=true;
-        ImGui::GetIO().IniFilename=layoutPath.c_str();editorSettingsPath=(binaries/"EditorSettings.txt").string();
-        std::ifstream settings(editorSettingsPath);if(settings)settings>>std::quoted(scriptEditor);
+        installRoot=InstallationRoot(binaries);
+        auto settingsDir=installRoot/"Engine"/"Settings";
+        fs::create_directories(settingsDir);
+        projectLocation=SceneLabel(installRoot/"Projects");
+        layoutPath=SceneLabel(settingsDir/"EditorLayout.ini");
+        if(fs::exists(fs::u8path(layoutPath)))ImGui::LoadIniSettingsFromDisk(layoutPath.c_str());else resetLayout=true;
+        ImGui::GetIO().IniFilename=layoutPath.c_str();editorSettingsPath=SceneLabel(settingsDir/"EditorSettings.txt");
+        std::ifstream settings(fs::u8path(editorSettingsPath));if(settings)settings>>std::quoted(scriptEditor);
         layoutInitialized=true;
     }
     void DrawWindowMenu(){
@@ -570,59 +605,172 @@ class SceneInspector {
     }
     static void AssetPicker(Workspace& w,const char* label,std::string& id,const BeforeEditorEdit& beforeEdit={}){
         RICE_BENCHMARK_FUNCTION();
-        std::string display="None";for(auto& e:w.project->assets.Entries())if(e.id==id)display=e.path.generic_string();
-        if(ImGui::BeginCombo(label,display.c_str())){if(ImGui::Selectable("None",id.empty())&&!id.empty()){if(beforeEdit)beforeEdit();id.clear();}for(auto& e:w.project->assets.Entries())if(ImGui::Selectable(e.path.generic_string().c_str(),e.id==id)&&id!=e.id){if(beforeEdit)beforeEdit();id=e.id;}ImGui::EndCombo();}
+        std::string display="None";for(auto& e:w.project->assets.Entries())if(e.id==id)display=SceneLabel(e.path);
+        if(ImGui::BeginCombo(label,display.c_str())){if(ImGui::Selectable("None",id.empty())&&!id.empty()){if(beforeEdit)beforeEdit();id.clear();}for(auto& e:w.project->assets.Entries())if(ImGui::Selectable(SceneLabel(e.path).c_str(),e.id==id)&&id!=e.id){if(beforeEdit)beforeEdit();id=e.id;}ImGui::EndCombo();}
     }
 public:
-    // No Workspace is constructed for the landing state: no scene, asset
-    // database, simulation, or project directory exists until Open succeeds.
-    std::optional<fs::path> DrawEmpty(const fs::path& binaries){
+    struct ProjectRequest { fs::path path; bool create; };
+    void RequestExit(){QueueProjectAction(ProjectAction::Exit);}
+private:
+    void QueueProjectAction(ProjectAction action,fs::path path={}){
+        if(!pendingProject)pendingProject=PendingProject{action,std::move(path)};
+    }
+    CloseResult CompleteProjectAction(Workspace& w){
+        auto action=pendingProject->action;
+        // Open and New validate the destination before replacing the workspace.
+        // Keep every draft if the destination fails to load or create.
+        auto stopPreview=[this]{streamingPanel.StopPreview();};
+        if(action==ProjectAction::Open)w.Open(pendingProject->path,stopPreview);
+        if(action==ProjectAction::New)w.New(pendingProject->path,stopPreview);
+        ResetSceneInteraction(w);scriptPanel.CloseProject();streamingPanel.CloseProject();
+        pendingProject.reset();closeError.clear();confirmingClose=false;
+        selectedPrefab.clear();prefabRoot=0;exportProject.clear();projectOpenError.clear();
+        if(action==ProjectAction::Exit)return CloseResult::Exit;
+        if(action==ProjectAction::Close)return CloseResult::CloseProject;
+        return CloseResult::None;
+    }
+    CloseResult ProjectCloseDialog(Workspace& w){
+        if(!pendingProject)return CloseResult::None;
+        if(!confirmingClose){
+            try{
+                FinishEdit(w);gizmo.Commit(w.editor);shapeEditor.Commit(w.editor);
+                if(!w.HasUnsavedChanges()&&!shapeEditor.HasUnsavedChanges()&&
+                   !scriptPanel.HasUnsavedChanges(w)&&!streamingPanel.HasUnsavedChanges()){
+                    try{return CompleteProjectAction(w);}
+                    catch(const std::exception& error){pendingProject.reset();w.Report(error);return CloseResult::None;}
+                }
+            }catch(const std::exception& error){closeError=error.what();}
+            confirmingClose=true;
+        }
+        constexpr const char* title="Unsaved project changes";
+        ImGui::OpenPopup(title,ImGuiPopupFlags_NoReopen);
+        CloseResult result=CloseResult::None;
+        if(ImGui::BeginPopupModal(title,nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
+            auto name=SceneLabel(w.project->FilePath().filename());
+            ImGui::Text("Save changes to %s before closing?",name.c_str());
+            if(!closeError.empty())ImGui::TextWrapped("%s",closeError.c_str());
+            bool save=ImGui::Button("Save");ImGui::SameLine();
+            bool discard=ImGui::Button("Don't Save");ImGui::SameLine();
+            if(ImGui::Button("Go Back")||ImGui::IsKeyPressed(ImGuiKey_Escape)){
+                pendingProject.reset();confirmingClose=false;closeError.clear();ImGui::CloseCurrentPopup();
+            }else if(save||discard){
+                try{
+                    if(save){
+                        scriptPanel.SaveBeforeClose(w);
+                        if(shapeEditor.HasUnsavedChanges())shapeEditor.SaveInScene(w.editor,&w.project->assets);
+                        streamingPanel.SaveBeforeClose(*w.editor.scene);
+                        w.SaveBeforeClose();
+                    }
+                    result=CompleteProjectAction(w);
+                    ImGui::CloseCurrentPopup();
+                }catch(const std::exception& error){closeError=error.what();w.Report(error);}
+            }
+            ImGui::EndPopup();
+        }
+        return result;
+    }
+    std::optional<ProjectRequest> NewProjectDialog(){
+        if(requestNewProject){
+            requestNewProject=false;
+            newProjectName="New Project";
+            ImGui::OpenPopup("New Project");
+        }
+        std::optional<ProjectRequest> selected;
+        if(ImGui::BeginPopupModal("New Project",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
+            if(ImGui::IsWindowAppearing())ImGui::SetKeyboardFocusHere();
+            EditString("Project name",newProjectName);
+            EditString("Location",projectLocation);
+            const bool valid=!newProjectName.empty()&&newProjectName!="."&&newProjectName!=".."&&
+                newProjectName.find_first_of("<>:\"/\\|?*")==std::string::npos&&
+                newProjectName.back()!='.'&&newProjectName.back()!=' '&&!projectLocation.empty();
+            ImGui::BeginDisabled(!valid);
+            if(ImGui::Button("Create")){
+                selected=ProjectRequest{fs::u8path(projectLocation)/fs::u8path(newProjectName),true};
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndDisabled();ImGui::SameLine();
+            if(ImGui::Button("Cancel"))ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        return selected;
+    }
+public:
+    std::optional<ProjectRequest> DrawEmpty(const fs::path& binaries){
         RICE_BENCHMARK_FUNCTION();
-        InitializeLayout(binaries);std::optional<fs::path> selected;
-        auto pick=[&]{try{selected=PickProjectFile(binaries);projectOpenError.clear();}
+        InitializeLayout(binaries);std::optional<ProjectRequest> selected;
+        auto pick=[&]{try{if(auto path=PickProjectFile(installRoot/"Projects"))selected=ProjectRequest{*path,false};projectOpenError.clear();}
             catch(const std::exception& error){projectOpenError=error.what();}};
         if(ImGui::BeginMainMenuBar()){
             if(ImGui::BeginMenu("File")){
+                if(ImGui::MenuItem("New Project...","Ctrl+N"))requestNewProject=true;
                 if(ImGui::MenuItem("Open Project...","Ctrl+O"))pick();
+                ImGui::MenuItem("Import...",nullptr,false,false);
                 ImGui::MenuItem("Save",nullptr,false,false);ImGui::EndMenu();
             }
             DrawWindowMenu();
-            if(ImGui::Button("Open Project..."))pick();
-            ImGui::SameLine();ImGui::BeginDisabled();ImGui::Button("Play");ImGui::SameLine();ImGui::Button("Pause");ImGui::EndDisabled();
+            ImGui::BeginDisabled();ImGui::Button("Import...");ImGui::SameLine();ImGui::Button("Play");ImGui::SameLine();ImGui::Button("Pause");ImGui::EndDisabled();
             ImGui::SameLine();ImGui::TextUnformatted("No project loaded");ImGui::EndMainMenuBar();
         }
         if(ImGui::GetIO().KeyCtrl&&ImGui::IsKeyPressed(ImGuiKey_O,false))pick();
+        if(ImGui::GetIO().KeyCtrl&&ImGui::IsKeyPressed(ImGuiKey_N,false))requestNewProject=true;
         auto dock=ImGui::DockSpaceOverViewport(ImGui::GetID("RiceDockSpace"),ImGui::GetMainViewport());
         if(resetLayout){DefaultLayout(dock);resetLayout=false;}
         auto empty=[](const char* title,bool& open){if(open){ImGui::Begin(title,&open);ImGui::End();}};
         empty("Hierarchy",hierarchyOpen);empty("Inspector###Inspector",inspectorOpen);
         empty("Scene",sceneOpen);empty("Game",gameOpen);empty("Input",inputOpen);empty("Benchmark",benchmarkOpen);
-        if(projectOpen){ImGui::Begin("Project",&projectOpen);ImGui::TextUnformatted("Open a project.rice file to begin.");
-            if(ImGui::Button("Open Project..."))pick();
+        if(projectOpen){ImGui::Begin("Project",&projectOpen);
+            ImGui::BeginDisabled();ImGui::Button("Import...");ImGui::EndDisabled();
+            ImGui::TextWrapped("Use File > New Project or Open Project to start importing assets.");
             if(!projectOpenError.empty())ImGui::TextWrapped("%s",projectOpenError.c_str());ImGui::End();}
         if(consoleOpen){ImGui::Begin("Console",&consoleOpen);if(!projectOpenError.empty())ImGui::TextWrapped("%s",projectOpenError.c_str());ImGui::End();}
+        if(auto created=NewProjectDialog())return created;
         return selected;
     }
     void ReportOpenError(const std::string& error){RICE_BENCHMARK_FUNCTION();projectOpenError=error;}
     PerspectiveCamera& SceneCamera(int width,int height){ RICE_BENCHMARK_FUNCTION(); return editorCamera.Get(float(width),float(height));}
     bool CapturesGameInput()const{ RICE_BENCHMARK_FUNCTION(); return !gameOpen||!gameFocused;}
     ~SceneInspector(){ RICE_BENCHMARK_FUNCTION(); if(layoutInitialized&&ImGui::GetCurrentContext()){ImGui::SaveIniSettingsToDisk(layoutPath.c_str());ImGui::GetIO().IniFilename=nullptr;}}
-    void Draw(Workspace& w,const fs::path& binaries,const std::function<Matrix4(int,int,bool)>& render){
+    CloseResult Draw(Workspace& w,const fs::path& binaries,const std::function<Matrix4(int,int,bool)>& render){
         RICE_BENCHMARK_FUNCTION();
         InitializeLayout(binaries);
+        if(exportProject!=w.project->root){
+            exportProject=w.project->root;
+            auto filename=w.project->FilePath().filename().replace_extension(".exe");
+            exportPath=SceneLabel(AvailableBuildFile(installRoot/"Builds"/filename));
+        }
+        auto pickProject=[&]{Guard(w,[&]{if(auto path=PickProjectFile(installRoot/"Projects"))QueueProjectAction(ProjectAction::Open,*path);});};
+        auto importAsset=[&]{Guard(w,[&]{
+            auto path=PickAssetFile();
+            if(!path)return;
+            if(_wcsicmp(path->extension().c_str(),L".fbx")==0){
+                FinishEdit(w);
+                auto root=w.ImportFbx(*path);
+                editorCamera.FrameHierarchy(*w.editor.scene,root);
+            }else{
+                w.project->assets.Import(*path);
+                w.Log("Imported asset: "+SceneLabel(path->filename()));
+            }
+        });};
         w.editor.SyncSelection();
         Shortcuts(w);
-        if(ImGui::GetIO().KeyCtrl&&ImGui::IsKeyPressed(ImGuiKey_O,false))Guard(w,[&]{if(auto path=PickProjectFile(w.project->root)){ResetSceneInteraction(w);w.Open(*path);}});
-        if(ImGui::GetIO().KeyCtrl&&ImGui::IsKeyPressed(ImGuiKey_S,false)&&!w.editor.playing)Guard(w,[&]{FinishEdit(w);shapeEditor.Commit(w.editor);w.Save();});
+        if(!pendingProject&&ImGui::GetIO().KeyCtrl&&ImGui::IsKeyPressed(ImGuiKey_O,false))pickProject();
+        if(!pendingProject&&ImGui::GetIO().KeyCtrl&&ImGui::IsKeyPressed(ImGuiKey_N,false))requestNewProject=true;
+        if(!pendingProject&&!scriptPanel.Focused()&&ImGui::GetIO().KeyCtrl&&ImGui::IsKeyPressed(ImGuiKey_S,false)&&!w.editor.playing)Guard(w,[&]{FinishEdit(w);shapeEditor.Commit(w.editor);w.Save();});
         w.editor.SyncSelection();
         if(ImGui::BeginMainMenuBar()){
             if(ImGui::BeginMenu("File")){
-                if(ImGui::MenuItem("Open Project...","Ctrl+O"))Guard(w,[&]{if(auto path=PickProjectFile(w.project->root)){ResetSceneInteraction(w);w.Open(*path);}});
+                if(ImGui::MenuItem("New Project...","Ctrl+N"))requestNewProject=true;
+                if(ImGui::MenuItem("Open Project...","Ctrl+O"))pickProject();
+                if(ImGui::MenuItem("Import..."))importAsset();
                 if(ImGui::MenuItem("Save","Ctrl+S",false,!w.editor.playing))Guard(w,[&]{FinishEdit(w);shapeEditor.Commit(w.editor);w.Save();});
+                if(ImGui::MenuItem("Close Project"))QueueProjectAction(ProjectAction::Close);
+                if(ImGui::MenuItem("Exit"))RequestExit();
                 ImGui::EndMenu();
             }
             DrawWindowMenu();
         DrawOptions(w);
+        if(ImGui::Button("Import..."))importAsset();
+        ImGui::SameLine();
         ImGui::TextUnformatted("Movable");ImGui::SameLine();
         auto toggle=[](const char* label,bool& enabled){ RICE_BENCHMARK_FUNCTION(); ImGui::PushStyleColor(ImGuiCol_Button,ImGui::GetStyleColorVec4(enabled?ImGuiCol_ButtonActive:ImGuiCol_Button));bool clicked=ImGui::Button(label);ImGui::PopStyleColor();if(clicked)enabled=!enabled;return clicked;};
         if(toggle("Camera",moveView)){cameraGesture.Cancel();wheelGesture.Cancel();}
@@ -685,7 +833,7 @@ public:
                     ImGui::TextUnformatted("Choose an image in Inspector.");
                     ImGui::EndTabItem();
                 }
-                if(ImGui::BeginTabItem("Script")) {
+                if(ImGui::BeginTabItem("Monkey Script")) {
                     if(ImGui::Selectable("Object"))create("Object",-1,1,false);
                     if(ImGui::Selectable("Singleton Manager"))create("Singleton Manager",-1,2,false);
                     if(ImGui::Selectable("Blank Script"))create("Blank Script",-1,3,false);
@@ -732,33 +880,19 @@ public:
                     auto originalMaterial=MaterialSettings(obj->GetComponent<Material>());
                     TriangleMaterials originalTriangles;if(protectedMaterial)originalTriangles=obj->GetComponent<MeshRenderer>()->triangleMaterials;
                     ImGui::BeginChild("Component box",{0,0},ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY);
-                    auto label=protectedMaterial?std::string("Material (edited in shape editor)###Material"):IsBuiltinScript(type.name)?std::string("Script"):type.name;
+                    auto label=protectedMaterial?std::string("Material (edited in shape editor)###Material"):MonkeyScriptKind(type.name)?std::string("Monkey Script"):type.name;
                     bool expanded=ImGui::CollapsingHeader(label.c_str(),ImGuiTreeNodeFlags_DefaultOpen);
                     if(type.name!="Material"||!materialPrompt.Pending(*w.editor.scene,*obj))ComponentMenu(w,*obj,type.name);
                     if(expanded&&(component=type.get(*obj))){
-                        if(IsBuiltinScript(type.name)){
-                            std::string* script=nullptr;
-                            type.fields(*component,[&](const char* name,Property property){
-                                if(std::string_view(name)=="Script file")script=std::get<std::string*>(property);
-                                DrawProperty(name,property,beforeEdit);
-                            });
-                            auto choose=[&]{
-                                if(auto path=PickScriptFile(w.project->assets.Root())){
-                                    auto relative=path->lexically_relative(w.project->assets.Root());
-                                    bool inside=!relative.empty()&&*relative.begin()!=fs::path("..");
-                                    auto chosen=SceneLabel(inside?relative:*path);if(*script!=chosen){beforeEdit();*script=std::move(chosen);}
-                                    return true;
-                                }
-                                return false;
-                            };
-                            if(ImGui::Button("Choose Script..."))Guard(w,choose);
-                            if(ImGui::Button("Open Script"))Guard(w,[&]{
-                                if(script->empty()&&!choose())return;
-                                auto path=fs::path(std::u8string(script->begin(),script->end()));
-                                if(path.is_relative())path=w.project->assets.Root()/path;
-                                OpenScriptFile(path,fs::path(std::u8string(scriptEditor.begin(),scriptEditor.end())));
-                            });
-                            ImGui::TextDisabled("%s",type.name.c_str());
+                        if(MonkeyScriptKind(type.name)){
+                            auto& script=static_cast<ScriptComponentBase&>(*component);
+                            DrawProperty("Enabled",&script.enabled,beforeEdit);
+                            ImGui::TextDisabled("%s",MonkeyScriptKind(type.name));
+                            if(!script.scriptFile.empty())ImGui::TextWrapped("%s",script.scriptFile.c_str());
+                            const bool error=scriptPanel.HasError(w,obj->GetID(),type.name);
+                            if(error)ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1.f,.30f,.30f,1.f));
+                            if(ImGui::Button("Open RiceMonkey"))Guard(w,[&]{scriptPanel.Open(w,*obj,type.name);});
+                            if(error)ImGui::PopStyleColor();
                         }
                         else if(type.name=="Material"){
                             materialProceeded=DrawMaterialInspector(*w.editor.scene,*obj,&w.project->assets,materialPrompt,beforeEdit);
@@ -837,18 +971,31 @@ public:
         EndFrameEdits(w);
         if(pendingObjectAction){FinishEdit(w);auto action=std::move(pendingObjectAction);pendingObjectAction=nullptr;Guard(w,action);}
         if(projectOpen){ImGui::Begin("Project",&projectOpen);
+        if(ImGui::Button("Import..."))importAsset();
+        ImGui::SameLine();if(ImGui::Button("Refresh"))Guard(w,[&]{w.project->assets.Refresh();});
         PrefabControls(w);
         if(ImGui::CollapsingHeader("Project / Export")){
-            EditString("Project folder",projectPath);
-            if(ImGui::Button("New project"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); ResetSceneInteraction(w);w.New(projectPath);});ImGui::SameLine();if(ImGui::Button("Open project"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); ResetSceneInteraction(w);w.Open(projectPath);});
-            EditString("Export folder",exportPath);if(ImGui::Button("Export standalone game"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); if(w.editor.playing)throw std::runtime_error("Stop before export");w.project->Export(*w.editor.scene,w.registry,binaries,exportPath);w.Log("Export complete: "+exportPath);});
+            EditString("Build file",exportPath);
+            if(ImGui::Button("Build standalone game"))Guard(w,[&]{
+                RICE_BENCHMARK_FUNCTION();
+                if(w.editor.playing)throw std::runtime_error("Stop before building");
+                auto path=fs::u8path(exportPath);
+                if(path.filename().empty())throw std::runtime_error("Enter a game executable filename.");
+                auto ext=path.extension().wstring();
+                if(!ext.empty()&&_wcsicmp(ext.c_str(),L".exe")!=0)throw std::runtime_error("Choose a Windows .exe filename.");
+                path.replace_extension(".exe");
+                if(fs::exists(path))throw std::runtime_error("Build file already exists. Choose a new filename.");
+                w.project->Export(*w.editor.scene,w.registry,binaries,path);
+                w.Log("Build complete: "+SceneLabel(path));
+                auto filename=w.project->FilePath().filename().replace_extension(".exe");
+                exportPath=SceneLabel(AvailableBuildFile(path.parent_path()/filename));
+            });
         }
-        EditString("Import file",importPath);if(ImGui::Button("Import asset"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); w.project->assets.Import(importPath);});ImGui::SameLine();if(ImGui::Button("Refresh"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); w.project->assets.Refresh();});
         EditString("New relative filename",renamePath);
         // Renaming invalidates the registry vector; apply after iteration.
         std::string renameID;
-        for(auto& e:w.project->assets.Entries()){ImGui::PushID(e.id.c_str());ImGui::TextUnformatted(e.path.generic_string().c_str());ImGui::SameLine();if(ImGui::SmallButton("Rename"))renameID=e.id;ImGui::PopID();}
-        if(!renameID.empty())Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); w.project->assets.Rename(renameID,renamePath);});
+        for(auto& e:w.project->assets.Entries()){ImGui::PushID(e.id.c_str());ImGui::TextUnformatted(SceneLabel(e.path).c_str());ImGui::SameLine();if(ImGui::SmallButton("Rename"))renameID=e.id;ImGui::PopID();}
+        if(!renameID.empty())Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); w.project->assets.Rename(renameID,fs::u8path(renamePath));});
         ImGui::End();}
         if(inputOpen){ImGui::Begin("Input",&inputOpen);
         if(ImGui::CollapsingHeader("Input actions (GLFW key codes)",ImGuiTreeNodeFlags_DefaultOpen)){for(auto& [name,key]:w.project->input.keys)ImGui::DragInt(name.c_str(),&key,1,32,348);ImGui::TextWrapped("A=65 D=68 W=87 S=83 Space=32. Save project to persist.");EditString("New action",newAction);ImGui::DragInt("Key code",&newKey,1,32,348);if(ImGui::Button("Add / rebind action"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); w.project->input.Bind(newAction,newKey);});}
@@ -867,6 +1014,9 @@ public:
         lastLogSequence=messages.empty()?0:messages.back().sequence;
         ImGui::EndChild();ImGui::End();}
         shapeEditor.Draw(w.editor,&w.project->assets);
+        scriptPanel.Draw(w,scriptEditor);
+        if(auto created=NewProjectDialog())QueueProjectAction(ProjectAction::New,created->path);
+        return ProjectCloseDialog(w);
     }
 };
 }

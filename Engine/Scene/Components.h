@@ -1,6 +1,7 @@
 #pragma once
 #include "Rice/Benchmark.h"
 #include "Scene.h"
+#include "ScriptComponent.h"
 #include "EnvironmentRenderer.h"
 #include "CameraComponent.h"
 #include "ShapeMesh.h"
@@ -58,10 +59,9 @@ struct MeshRenderer : Component {
         shape=next;
     }
 };
-struct ObjectScript : MonoBehaviour { std::string scriptFile; };
-struct BlankScript : MonoBehaviour { std::string scriptFile; };
-struct SingletonManager : MonoBehaviour {
-    std::string scriptFile;
+struct ObjectScript : ScriptComponentBase {};
+struct BlankScript : ScriptComponentBase {};
+struct SingletonManager : ScriptComponentBase {
     static SingletonManager* Instance(Scene& scene) {
         RICE_BENCHMARK_FUNCTION();
         for (auto& object : scene.GetObjects()) {
@@ -192,21 +192,36 @@ private:
     uint64_t shadowReflectionVersion=0;
     std::map<EntityID,uint64_t> reflectionShadowVersions;
     Ref<Shader> shadowShader;
-    void DrawShadow(const Matrix4& vp){
+    static IntVector2 ShadowOwner(EntityID id){
+        return {std::bit_cast<int32_t>(uint32_t(id)),std::bit_cast<int32_t>(uint32_t(id>>32))};
+    }
+    void DrawShadow(const Matrix4& vp,int layer,bool otherCasters){
         if(!shadowShader)shadowShader=Ref<Shader>(Shader::Create(R"(#version 330 core
 layout(location=0) in vec3 position;layout(location=1) in vec3 normal;layout(location=2) in vec2 uv;
-layout(location=3) in mat4 instanceWorld;layout(location=7) in vec4 instanceColor;
+layout(location=3) in mat4 instanceWorld;layout(location=7) in vec4 instanceColor;layout(location=8) in ivec2 instanceOwner;
 uniform mat4 u_ViewProjection,u_Transform;uniform int u_Instanced;uniform vec4 color,uvRect;
+uniform ivec2 objectOwner;flat out uvec2 casterOwner;
 out vec2 UV;out vec3 localNormal,localPosition;out vec4 vertexColor;
 void main(){mat4 world=u_Instanced==1?instanceWorld:u_Transform;vertexColor=u_Instanced==1?instanceColor:color;
+casterOwner=uvec2(u_Instanced==1?instanceOwner:objectOwner);
 localNormal=normal;localPosition=position;UV=uvRect.xy+uv*uvRect.zw;gl_Position=u_ViewProjection*world*vec4(position,1);}
 )",std::string(R"(#version 330 core
 in vec2 UV;in vec4 vertexColor;uniform sampler2D image;uniform int sprite,textured;
+flat in uvec2 casterOwner;layout(location=0) out uvec2 nearestOwner;
+uniform usampler2DArray nearestOwnerMap;uniform int ownerLayer,otherCasters;
 )")+MaterialUVGLSL+R"(
-void main(){float alpha=vertexColor.a;if(textured==1)alpha*=texture(image,sprite==1?UV:materialUV()).a;if(alpha<.1)discard;}
+void main(){
+    if(otherCasters==1 && texelFetch(nearestOwnerMap,ivec3(ivec2(gl_FragCoord.xy),ownerLayer),0).rg==casterOwner)discard;
+    float alpha=vertexColor.a;
+    if(textured==1)alpha*=texture(image,sprite==1?UV:materialUV()).a;
+    if(alpha<.1)discard;
+    nearestOwner=casterOwner;
+}
 )"));
         shadowShader->Bind();shadowShader->SetUniformMat4("u_ViewProjection",vp);
         shadowShader->SetUniformInt("image",0);shadowShader->SetUniformInt("u_Instanced",0);
+        shadowShader->SetUniformInt("nearestOwnerMap",4);shadowShader->SetUniformInt("ownerLayer",layer);
+        shadowShader->SetUniformInt("otherCasters",otherCasters);
         std::vector<size_t> visible;
         shadowDrawStats.candidates+=shadowCasterCount;
         if(shadowCullingEnabled)spatialCache.Tree().QueryFrustum(vp,[&](size_t i){visible.push_back(i);});
@@ -217,6 +232,7 @@ void main(){float alpha=vertexColor.a;if(textured==1)alpha*=texture(image,sprite
             if(!glm::all(glm::greaterThan(glm::abs(object.transform.localScale),Vector3(.00001f))))continue;
             auto* mesh=object.GetComponent<MeshRenderer>();auto* sprite=object.GetComponent<SpriteRenderer>();
             auto draw=[&](const Ref<VertexArray>& array,Color color,const Ref<Texture2D>& texture,bool isSprite,Vector4 uv,uint32_t count=0,uint32_t first=0){
+                shadowShader->SetUniformInt2("objectOwner",ShadowOwner(object.GetID()));
                 shadowShader->SetUniformMat4("u_Transform",entry.world);shadowShader->SetUniformFloat4("color",color);
                 shadowShader->SetUniformInt("textured",texture?1:0);shadowShader->SetUniformInt("sprite",isSprite);
                 shadowShader->SetUniformFloat4("uvRect",uv);
@@ -227,7 +243,7 @@ void main(){float alpha=vertexColor.a;if(textured==1)alpha*=texture(image,sprite
             if(mesh&&mesh->enabled&&mesh->castsShadow&&mesh->color.a>=.1f){
                 ++shadowDrawStats.submitted;
                 auto base=MaterialSettings(object.GetComponent<Material>());
-                if(mesh->shape==int(BasicShape::Cube)&&!(base.enabled&&base.albedoTexture))instances.push_back({entry.world,mesh->color});
+                if(mesh->shape==int(BasicShape::Cube)&&!(base.enabled&&base.albedoTexture))instances.push_back({entry.world,mesh->color,ShadowOwner(object.GetID())});
                 else if(mesh->shape==int(BasicShape::Custom)){
                     auto array=CustomArray(*mesh);
                     mesh->triangleMaterials.Runs(static_cast<uint32_t>(mesh->custom.indices.size()/3),base,[&](uint32_t first,uint32_t count,const SurfaceMaterial& value){
@@ -288,7 +304,8 @@ void main(){float alpha=vertexColor.a;if(textured==1)alpha*=texture(image,sprite
             }
         }
         shadowInvalidation.Update(scene.GetInstanceID(),std::move(snapshot),preparedLights);
-        shadowMaps.Update(scene.GetInstanceID(),preparedLights,bounds,shadowInvalidation.Revisions(),[&](size_t,int,const Matrix4& vp){DrawShadow(vp);});
+        shadowMaps.Update(scene.GetInstanceID(),preparedLights,bounds,shadowInvalidation.Revisions(),
+            [&](size_t,int,const Matrix4& vp,int layer,bool otherCasters){DrawShadow(vp,layer,otherCasters);});
         std::vector<uint64_t> lighting{scene.GetInstanceID(),uint64_t(shadowsEnabled)};
         for(const auto& light:preparedLights){
             lighting.push_back(light.id);lighting.push_back(light.type);lighting.push_back(light.castsShadow);
@@ -332,8 +349,8 @@ void main(){float alpha=vertexColor.a;if(textured==1)alpha*=texture(image,sprite
     Ref<Shader> shader;
     bool cubeInstancingEnabled=true;
     RenderStats renderStats;
-    struct CubeInstance { Matrix4 world;Color color; };
-    static_assert(sizeof(CubeInstance)==20*sizeof(float));
+    struct CubeInstance { Matrix4 world;Color color;IntVector2 owner; };
+    static_assert(sizeof(CubeInstance)==20*sizeof(float)+2*sizeof(int32_t));
     struct CubeMaterial {
         Ref<Texture2D> texture;
         bool active=false;
@@ -462,16 +479,19 @@ public:
         for(const auto& buffer:cube->GetVertexBuffers())instancedCube->AddVertexBuffer(buffer);
         instancedCube->SetIndexBuffer(cube->GetIndexBuffer());
         cubeInstanceBuffer=CreateRef<VertexBuffer>(nullptr,0);
-        cubeInstanceBuffer->SetLayout({{ShaderDataType::Mat4,"instanceWorld"},{ShaderDataType::Float4,"instanceColor"}});
+        cubeInstanceBuffer->SetLayout({{ShaderDataType::Mat4,"instanceWorld"},{ShaderDataType::Float4,"instanceColor"},{ShaderDataType::Int2,"instanceOwner"}});
         instancedCube->AddVertexBuffer(cubeInstanceBuffer,1);
         shader=Ref<Shader>(Shader::Create(R"(#version 330 core
 layout(location=0) in vec3 position; layout(location=1) in vec3 normal; layout(location=2) in vec2 uv;
-layout(location=3) in mat4 instanceWorld; layout(location=7) in vec4 instanceColor;
+layout(location=3) in mat4 instanceWorld; layout(location=7) in vec4 instanceColor; layout(location=8) in ivec2 instanceOwner;
+uniform ivec2 objectOwner;flat out uvec2 receiverOwner;
 uniform int u_Instanced; uniform vec4 color; out vec4 vertexColor;
 uniform mat4 u_ViewProjection,u_Transform; uniform vec4 uvRect; out vec3 N; out vec3 worldPosition; out vec2 UV; out vec3 localNormal; out vec3 localPosition;
-void main(){mat4 transform=u_Instanced==1?instanceWorld:u_Transform;vertexColor=u_Instanced==1?instanceColor:color;localNormal=normal;localPosition=position;vec4 world=transform*vec4(position,1);worldPosition=world.xyz;gl_Position=u_ViewProjection*world;N=transpose(inverse(mat3(transform)))*normal;UV=uvRect.xy+uv*uvRect.zw;}
+void main(){mat4 transform=u_Instanced==1?instanceWorld:u_Transform;vertexColor=u_Instanced==1?instanceColor:color;
+receiverOwner=uvec2(u_Instanced==1?instanceOwner:objectOwner);
+localNormal=normal;localPosition=position;vec4 world=transform*vec4(position,1);worldPosition=world.xyz;gl_Position=u_ViewProjection*world;N=transpose(inverse(mat3(transform)))*normal;UV=uvRect.xy+uv*uvRect.zw;}
 )",std::string(R"(#version 330 core
-in vec3 N; in vec3 worldPosition; in vec2 UV; in vec4 vertexColor; out vec4 result;
+in vec3 N; in vec3 worldPosition; in vec2 UV; in vec4 vertexColor; flat in uvec2 receiverOwner; out vec4 result;
 uniform vec3 lightColor[8], lightDirection[8]; uniform vec4 lightPositionRange[8]; uniform int lightType[8]; uniform int lightCount, sprite, textured; uniform sampler2D image;
 uniform int useMaterial, unlit;
 uniform int useReflection, flatReflection;
@@ -515,7 +535,7 @@ float nl=max(dot(normal,L),0.0);
 if(nl>0.0){
     vec3 response=c.rgb;
     if(useMaterial==1) response=cookTorrance(c.rgb,normal,V,L,nl);
-    light+=shadowVisibility(i,worldPosition,normal)*response*lightColor[i]*attenuation*nl;
+    light+=shadowVisibility(i,worldPosition,normal,receiverOwner)*response*lightColor[i]*attenuation*nl;
 }
 }
 if(useMaterial==1 && useReflection==1){
@@ -544,7 +564,7 @@ result=vec4(light,c.a);}
         Renderer::BeginScene(camera);shader->Bind();
         shader->SetUniformInt("u_Instanced",0);
         shader->SetUniformInt("unlit",1);shader->SetUniformInt("sprite",0);
-        shader->SetUniformInt("shadowMap",3);shader->SetUniformInt("shadowLightCount",0);
+        ShadowMaps::SetSamplerUnits(shader);shader->SetUniformInt("shadowLightCount",0);
         shader->SetUniformInt("environmentMap",1);shader->SetUniformInt("reflectionGeometry",2);
         shader->SetUniformInt("useMaterial",0);shader->SetUniformInt("useReflection",0);
         shader->SetUniformInt("lightCount",0);shader->SetUniformInt("cubeLayout",0);
@@ -588,25 +608,26 @@ result=vec4(light,c.a);}
                 });
             });
             std::erase_if(reflectionShadowVersions,[&](const auto& entry){return !reflections.contains(entry.first);});
-            for(auto& object:scene.GetObjects())if(object->IsActive()){
-                auto* mesh=object->GetComponent<MeshRenderer>();
-                auto* material=object->GetComponent<Material>();
-                if(!mesh || !mesh->enabled || (!(material&&material->enabled)&&!mesh->triangleMaterials.HasEnabled()))continue;
-                auto world=object->GetWorldMatrix();
+            scene.EachComponent<MeshRenderer>([&](MeshRenderer& mesh) {
+                auto& object = mesh.GetGameObject();
+                if (!mesh.enabled || !object.IsActive() || object.GetComponent<MeshRenderer>() != &mesh) return;
+                auto* material = object.GetComponent<Material>();
+                if (!(material && material->enabled) && !mesh.triangleMaterials.HasEnabled()) return;
+                auto world = object.GetWorldMatrix();
                 ReflectionProbe* selected=nullptr;
                 float closest=std::numeric_limits<float>::max();
                 for(auto* candidate:probes){
-                    if(&candidate->GetGameObject()==object.get()){selected=candidate;break;}
+                    if(&candidate->GetGameObject()==&object){selected=candidate;break;}
                     auto offset=Vector3(candidate->GetGameObject().GetWorldMatrix()[3])-Vector3(world[3]);
                     float distance=glm::dot(offset,offset);
                     if(distance<closest){closest=distance;selected=candidate;}
                 }
                 Vector3 low(-.5f),high(.5f);
-                if(mesh->shape==int(BasicShape::Circle)||mesh->shape==int(BasicShape::Rectangle)){low.z=0;high.z=0;}
-                if(mesh->shape==int(BasicShape::Custom))std::tie(low,high)=*mesh->GeometryBounds();
+                if(mesh.shape==int(BasicShape::Circle)||mesh.shape==int(BasicShape::Rectangle)){low.z=0;high.z=0;}
+                if(mesh.shape==int(BasicShape::Custom))std::tie(low,high)=*mesh.GeometryBounds();
                 float size=ReflectionPixelSize(world,camera.GetVPMatrix(),Vector2(viewport[2],viewport[3]),low,high);
-                receivers.emplace(object->GetID(),Receiver{selected,size});
-            }
+                receivers.emplace(object.GetID(),Receiver{selected,size});
+            });
             std::vector<Vector4> geometry;
             std::vector<EntityID> geometryOwners;
             bool geometryBuilt=false;
@@ -718,12 +739,13 @@ result=vec4(light,c.a);}
                         material?std::clamp(material->roughness,.045f,1.f):.5f};
                     if(!cubeInstances.empty()&&(!(next==pendingMaterial)||cubeInstances.size()>=std::numeric_limits<uint32_t>::max()/sizeof(CubeInstance)))FlushCubeInstances(pendingMaterial);
                     pendingMaterial=std::move(next);
-                    cubeInstances.push_back({drawWorld(),mesh->color});
+                    cubeInstances.push_back({drawWorld(),mesh->color,ShadowOwner(obj->GetID())});
                     continue;
                 }
             }
             // Preserve submission order across sprites, custom geometry and reflection receivers.
             if(!cubeInstances.empty())FlushCubeInstances(pendingMaterial);
+            shader->SetUniformInt2("objectOwner",ShadowOwner(obj->GetID()));
             auto draw=[&](Color color,bool isSprite,Ref<Texture2D> texture,uint32_t indexCount=0,uint32_t firstIndex=0) {
                 RICE_BENCHMARK_FUNCTION();
                 shader->Bind(); shader->SetUniformFloat4("color",color); shader->SetUniformInt("sprite",isSprite); shader->SetUniformInt("textured",texture?1:0);shader->SetUniformInt("image",0);

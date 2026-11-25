@@ -91,7 +91,7 @@ public:
              Lifetime L = (S == Scope::Global ? Lifetime::Stored : Lifetime::Game)>
     Field<T> Bind(std::string stableId, T initial, std::string name,
                   AccessPolicy access = {}, std::string description = {}) {
-        static_assert(Encodable<T>, "Routed data type requires a DataCodec or RICE_DATA_STRUCT registration");
+        static_assert(Routable<T>, "Routed data type requires a DataCodec or RICE_DATA_STRUCT registration");
         static_assert(S != Scope::Global || L == Lifetime::Stored,
                       "global variables can't be game(stream) temporary. slot is also temporary for this rule.");
         if (access.kind != AccessKind::Locked && access.kind != AccessKind::Open && access.kind != AccessKind::Policy)

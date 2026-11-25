@@ -1,5 +1,10 @@
 add_library(RiceCore STATIC)
 
+# ufbx v0.23.1 (26a482ae66871d7de36eb722aa060bce95bce274).
+add_library(RiceUfbx STATIC ${PROJECT_SOURCE_DIR}/Dependencies/ufbx/ufbx.c)
+target_include_directories(RiceUfbx PUBLIC ${PROJECT_SOURCE_DIR}/Dependencies/ufbx)
+install(FILES ${PROJECT_SOURCE_DIR}/Dependencies/ufbx/LICENSE DESTINATION Engine/ThirdParty/ufbx RENAME LICENSE.txt)
+
 target_sources(
     RiceCore
     PRIVATE
@@ -11,7 +16,9 @@ target_sources(
         Source/LayerStack.cpp
         Source/PreCompiledheaders.cpp
         Source/Time.cpp
-        ${PROJECT_SOURCE_DIR}/Engine/Dependencies/stb_image/StbImage.cpp
+        ${PROJECT_SOURCE_DIR}/Dependencies/stb_image/StbImage.cpp
+        ${PROJECT_SOURCE_DIR}/Project/FbxModel.cpp
+        ${PROJECT_SOURCE_DIR}/Project/FbxImport.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -41,8 +48,8 @@ target_include_directories(
     RiceCore
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
-        ${PROJECT_SOURCE_DIR}/Engine
-        ${PROJECT_SOURCE_DIR}/Engine/Dependencies/stb_image
+        ${PROJECT_SOURCE_DIR}
+        ${PROJECT_SOURCE_DIR}/Dependencies/stb_image
 )
 
 target_compile_definitions(
@@ -63,6 +70,7 @@ target_link_libraries(
         imgui::imgui
     PRIVATE
         RiceBuildOptions
+        RiceUfbx
         glad::glad
         glfw
         glm::glm

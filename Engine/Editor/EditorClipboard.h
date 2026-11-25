@@ -33,6 +33,7 @@ public:
             try{
                 for(auto& node:objects){auto& obj=scene.CreateGameObject(node.name);created.push_back(obj.GetID());ids[node.source]=obj.GetID();obj.transform=node.transform;obj.activeSelf=node.active;obj.isGroup=node.isGroup;ComponentSnapshot::Apply(obj,node.components,registry);}
                 for(auto& node:objects){auto* obj=scene.Find(ids.at(node.source));if(ids.contains(node.parent))obj->SetParent(scene.Find(ids.at(node.parent)));else if(scene.GetInstanceID()==sourceScene)obj->SetParent(scene.Find(node.parent));}
+                for(auto& node:objects)RemapScriptBindings(*scene.Find(ids.at(node.source)),[&](EntityID id){return ids.contains(id)?ids.at(id):EntityID{};});
                 for(auto& node:objects)if(auto* anchor=scene.Find(ids.at(node.source))->GetComponent<Anchor>())anchor->child=ids.contains(anchor->child)?ids.at(anchor->child):0;
                 for(auto& node:objects)if(auto* f=scene.Find(ids.at(node.source))->GetComponent<CameraFollower>())f->camera=ids.contains(f->camera)?ids.at(f->camera):f->camera;
                 for(auto& node:objects){auto* obj=scene.Find(ids.at(node.source));auto* group=ids.contains(node.group)?scene.Find(ids.at(node.group)):(scene.GetInstanceID()==sourceScene?scene.Find(node.group):nullptr);

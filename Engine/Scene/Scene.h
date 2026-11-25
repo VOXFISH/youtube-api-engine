@@ -1,6 +1,7 @@
 #pragma once
 #include "Rice/Benchmark.h"
 #include "Rice/Core.h"
+#include "ComponentStorage.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <string>
@@ -12,6 +13,7 @@
 #include <exception>
 #include <functional>
 #include <optional>
+#include <unordered_map>
 namespace Rice {
 class Texture2D;
 using EntityID = uint64_t;
@@ -36,6 +38,8 @@ struct Transform {
 };
 class Scene;
 class GameObject;
+struct ScriptComponentBase;
+class ScriptExecution;
 class Component {
     friend class GameObject;
     GameObject* owner=nullptr;
@@ -67,7 +71,21 @@ class GameObject {
     EntityID id=nextID++;
     Scene* owningScene=nullptr;
     uint64_t* hierarchyRevision=nullptr;
-    std::vector<Scope<Component>> components;
+    using Storage = ComponentStorage<Component>;
+    struct Attachment {
+        Component* value;
+        Storage::Pool* pool;
+        // Removed instances survive until their deferred lifecycle callbacks finish.
+        Scope<Component> retired;
+    };
+    Scope<Storage> standaloneStorage;
+    Storage* storage=nullptr;
+    size_t storageSlot=0;
+    std::vector<Attachment> components; // Attachment order for script callbacks.
+    bool flushingComponents=false;
+    bool destroyingComponents=false;
+    bool deferredComponentFlush=false;
+    size_t componentVisits=0;
     GameObject* parent=nullptr;
     GameObject* group=nullptr;
     bool pendingDestroy=false;
@@ -79,6 +97,17 @@ class GameObject {
     mutable Vector3 cachedPivot{0};
     mutable Matrix4 cachedParent{1},cachedWorld{1};
     void HierarchyChanged(){if(hierarchyRevision)++*hierarchyRevision;}
+
+    // A visitor can remove its own component or destroy its object. Keep the
+    // current reference alive until the outermost callback returns.
+    template<class F>void VisitComponents(F&& fn){
+        {
+            struct Visit {size_t& count;~Visit(){--count;}} guard{componentVisits};
+            ++componentVisits;
+            fn();
+        }
+        if(!componentVisits&&deferredComponentFlush)FlushComponents();
+    }
 
     template<class F>void NotifyComponents(F fn) {
         RICE_BENCHMARK_FUNCTION();
@@ -94,10 +123,16 @@ public:
     GameObject(const GameObject&)=delete; GameObject& operator=(const GameObject&)=delete;
     ~GameObject() {
         RICE_BENCHMARK_FUNCTION();
-        for(auto& component:components){
+        destroyingComponents=true;
+        for(auto& attachment:components){
+            auto* component=attachment.value;
             try{if(component->wasEnabled)component->OnDisable();}catch(...){}
             try{component->OnDestroy();}catch(...){}
         }
+        for(auto& attachment:components)
+            if(!attachment.retired)attachment.retired=attachment.pool->Take(storageSlot);
+        components.clear();
+        if(storage)storage->ReleaseSlot(storageSlot);
     }
     std::string name; Transform transform; bool activeSelf=true;
     bool isGroup=false;
@@ -142,7 +177,7 @@ public:
     bool DependsOn(const GameObject* value)const{ RICE_BENCHMARK_FUNCTION(); return this==value||(parent&&parent->DependsOn(value))||(group&&group->DependsOn(value));}
     Vector3 GetLocalPivot()const{
         RICE_BENCHMARK_FUNCTION();
-        for(const auto& c:components)if(!c->removed)if(auto bounds=c->GeometryBounds())return bounds->first+(bounds->second-bounds->first)*transform.pivot;
+        for(const auto& link:components)if(link.value&&!link.retired)if(auto bounds=link.value->GeometryBounds())return bounds->first+(bounds->second-bounds->first)*transform.pivot;
         return transform.pivot-Vector3(.5f);
     }
     const Anchor* ParentAnchor()const{
@@ -208,32 +243,87 @@ public:
     template<class T,class... Args>T& AddComponent(Args&&... args) {
         RICE_BENCHMARK_FUNCTION();
         if constexpr(std::is_same_v<T,Transform>)return transform;
-        else {static_assert(std::is_base_of_v<Component,T>);if(auto* old=GetComponent<T>())return *old;
-            auto value=CreateScope<T>(std::forward<Args>(args)...);auto* result=value.get();result->owner=this;components.push_back(std::move(value));result->Awake();return *result;}
+        else {
+            static_assert(std::is_base_of_v<Component,T>);
+            if(auto* old=GetComponent<T>())return *old;
+            if(destroyingComponents)throw std::logic_error("Cannot attach to a destroyed object");
+            if(!storage){
+                standaloneStorage=CreateScope<Storage>();
+                storageSlot=standaloneStorage->AcquireSlot();
+                storage=standaloneStorage.get();
+            }
+            auto value=CreateScope<T>(std::forward<Args>(args)...);
+            auto* result=value.get();
+            auto& pool=storage->Assure<T>();
+            result->owner=this;
+            components.push_back({result,&pool,{}});
+            try{pool.Insert(storageSlot,std::move(value));}
+            catch(...){components.pop_back();throw;}
+            VisitComponents([&]{
+                result->Awake();
+                if(result->removed&&deferredComponentFlush)
+                    throw std::logic_error("Component removed during Awake");
+            });
+            return *result;
+        }
     }
-    template<class T>T* GetComponent() const { RICE_BENCHMARK_FUNCTION(); if constexpr(std::is_same_v<T,Transform>)return const_cast<Transform*>(&transform);else {for(auto& c:components)if(!c->removed)if(auto* result=dynamic_cast<T*>(c.get()))return result;return nullptr;}}
-    template<class T>void RemoveComponent(){ RICE_BENCHMARK_FUNCTION(); static_assert(!std::is_same_v<T,Transform>);if(auto* c=GetComponent<T>())c->removed=true;}
+    template<class T>T* GetComponent() const {
+        RICE_BENCHMARK_FUNCTION();
+        if constexpr(std::is_same_v<T,Transform>)return const_cast<Transform*>(&transform);
+        else {
+            if(!storage)return nullptr;
+            if(auto* exact=storage->GetExact<T>(storageSlot))return exact;
+            // Scripts may ask for a base class or an interface shared by several types.
+            if(storage->MayHaveDerived<T>())
+                for(const auto& link:components)
+                    if(!link.retired)if(auto* match=dynamic_cast<T*>(link.value))return match;
+            return nullptr;
+        }
+    }
+    template<class T>void RemoveComponent(){
+        RICE_BENCHMARK_FUNCTION();
+        static_assert(!std::is_same_v<T,Transform>);
+        if(auto* component=GetComponent<T>())RemoveComponent(*component);
+    }
     void RemoveComponent(Component& component) {
         RICE_BENCHMARK_FUNCTION();
         if(component.owner!=this)throw std::invalid_argument("Component belongs to another object");
-        component.removed=true;
+        if(component.removed)return;
+        for(auto& link:components)if(link.value==&component){
+            link.retired=link.pool->Take(storageSlot);
+            component.removed=true;
+            return;
+        }
     }
     void FlushComponents(){
         RICE_BENCHMARK_FUNCTION();
+        if(flushingComponents||destroyingComponents)return;
+        if(componentVisits){deferredComponentFlush=true;return;}
+        deferredComponentFlush=false;
+        flushingComponents=true;
         std::exception_ptr failure;
         auto invoke=[&](auto callback){try{callback();}catch(...){if(!failure)failure=std::current_exception();}};
-        auto count=components.size();
-        for(size_t i=0;i<count;++i)if(components[i]->removed){
-            auto* component=components[i].get();
+        const auto count=components.size();
+        for(size_t i=0;i<count;++i)if(components[i].retired){
+            // A callback may append a replacement while the old instance is retiring.
+            auto component=std::move(components[i].retired);
+            components[i].value=nullptr;
             bool wasEnabled=component->wasEnabled;component->wasEnabled=false;
             if(wasEnabled)invoke([&]{component->OnDisable();});
             invoke([&]{component->OnDestroy();});
         }
-        std::erase_if(components,[](auto& c){return c->removed;});
+        std::erase_if(components,[](const auto& link){return !link.value;});
+        flushingComponents=false;
         if(failure)std::rethrow_exception(failure);
     }
     void SetActive(bool value){ RICE_BENCHMARK_FUNCTION(); activeSelf=value;}
-    template<class F>void EachComponent(F fn){ RICE_BENCHMARK_FUNCTION(); auto n=components.size();for(size_t i=0;i<n;++i)if(!components[i]->removed)fn(*components[i]);}
+    template<class F>void EachComponent(F fn){
+        RICE_BENCHMARK_FUNCTION();
+        VisitComponents([&]{
+            const auto n=components.size();
+            for(size_t i=0;i<n;++i)if(components[i].value&&!components[i].retired)fn(*components[i].value);
+        });
+    }
     void Update(float dt){ RICE_BENCHMARK_FUNCTION(); EachComponent([&](Component& c){ RICE_BENCHMARK_FUNCTION(); bool active=IsActive()&&c.enabled;if(active!=c.wasEnabled){c.wasEnabled=active;if(active)c.OnEnable();else c.OnDisable();}if(!active)return;if(!c.started){c.started=true;c.Start();}if(IsActive()&&c.enabled&&!c.removed)c.Update(dt);});}
     void Render(){ RICE_BENCHMARK_FUNCTION(); if(IsActive())EachComponent([](Component& c){ RICE_BENCHMARK_FUNCTION(); if(c.enabled)c.Render();});}
 };
@@ -249,21 +339,50 @@ class Scene {
     inline static std::atomic<uint64_t> nextInstance{1};
     uint64_t instance=nextInstance++;
     uint64_t hierarchyRevision=0;
+    ComponentStorage<Component> componentStorage;
+    std::unordered_map<EntityID,GameObject*> liveObjects;
     std::vector<Scope<GameObject>> objects;
     std::function<GameObject&(const std::string&,Vector3)> instantiatePrefab;
     std::function<bool(EntityID)> releasePrefab;
     std::function<void(const std::string&,size_t)> prewarmPrefab;
     bool tearingDown=false;
+    size_t sceneVisits=0;
+    bool deferredDestroyFlush=false;
+
+    template<class F>void VisitScene(F&& fn){
+        {
+            struct Visit {size_t& count;~Visit(){--count;}} guard{sceneVisits};
+            ++sceneVisits;
+            fn();
+        }
+        if(!sceneVisits&&deferredDestroyFlush)FlushDestroyed();
+    }
+    template<class F>void VisitObjectsInOrder(F&& fn){
+        VisitScene([&]{
+            const auto count=objects.size();
+            for(size_t i=0;i<count;++i)fn(*objects[i]);
+        });
+    }
+    void MarkDestroyed(GameObject& object){
+        if(object.pendingDestroy)return;
+        object.pendingDestroy=true;
+        liveObjects.erase(object.id);
+        ++hierarchyRevision;
+        for(auto& child:objects)
+            if(child->parent==&object||child->group==&object)MarkDestroyed(*child);
+    }
 public:
     ~Scene() {
         RICE_BENCHMARK_FUNCTION();
         tearingDown=true;
         instantiatePrefab={};releasePrefab={};prewarmPrefab={};
         // Script destruction sees an empty scene while its callback objects are alive.
+        liveObjects.clear();
         auto discarded=std::move(objects);
         discarded.clear();
     }
     SceneSettings settings;
+    std::function<std::unique_ptr<ScriptExecution>(ScriptComponentBase&)> createScriptExecution;
     Ref<Texture2D> skyboxTexture;
     std::string loadedSkyboxAsset;
     void SetPrefabCallbacks(std::function<GameObject&(const std::string&,Vector3)> instantiate,
@@ -289,11 +408,74 @@ public:
     }
     uint64_t GetInstanceID()const{ RICE_BENCHMARK_FUNCTION(); return instance;}
     uint64_t GetHierarchyRevision()const{return hierarchyRevision;}
-    GameObject& CreateGameObject(std::string name="GameObject",EntityID id=0){ RICE_BENCHMARK_FUNCTION(); if(tearingDown)throw std::logic_error("Scene is being destroyed");if(id&&Find(id))throw std::invalid_argument("Duplicate entity ID");objects.push_back(CreateScope<GameObject>(std::move(name)));auto& o=*objects.back();o.owningScene=this;o.hierarchyRevision=&hierarchyRevision;++hierarchyRevision;if(id){o.id=id;GameObject::nextID.store(std::max(GameObject::nextID.load(),id+1));}return o;}
-    GameObject* Find(EntityID id) const{ RICE_BENCHMARK_FUNCTION(); for(auto& o:objects)if(o->id==id&&!o->pendingDestroy)return o.get();return nullptr;}
-    void Destroy(EntityID id){ RICE_BENCHMARK_FUNCTION(); if(auto* o=Find(id)){o->pendingDestroy=true;++hierarchyRevision;for(auto& c:objects)if(c->parent==o||c->group==o)Destroy(c->id);}}
-    void FlushDestroyed(){ RICE_BENCHMARK_FUNCTION(); for(auto& o:objects)if(auto* a=o->GetComponent<Anchor>();a&&a->child&&!Find(a->child))a->child=0;std::erase_if(objects,[](auto& o){return o->pendingDestroy;}); }
-    void Flush(){ RICE_BENCHMARK_FUNCTION(); for(auto& o:objects)o->FlushComponents();FlushDestroyed();}
+    GameObject& CreateGameObject(std::string name="GameObject",EntityID id=0){
+        RICE_BENCHMARK_FUNCTION();
+        if(tearingDown)throw std::logic_error("Scene is being destroyed");
+        auto object=CreateScope<GameObject>(std::move(name));
+        if(id){
+            object->id=id;
+            GameObject::nextID.store(std::max(GameObject::nextID.load(),id+1));
+        }
+        object->owningScene=this;
+        object->hierarchyRevision=&hierarchyRevision;
+        object->storageSlot=componentStorage.AcquireSlot();
+        object->storage=&componentStorage;
+        auto [entry,inserted]=liveObjects.emplace(object->id,object.get());
+        if(!inserted)throw std::invalid_argument("Duplicate entity ID");
+        try{objects.push_back(std::move(object));}
+        catch(...){liveObjects.erase(entry);throw;}
+        ++hierarchyRevision;
+        return *objects.back();
+    }
+    GameObject* Find(EntityID id) const{
+        RICE_BENCHMARK_FUNCTION();
+        auto found=liveObjects.find(id);
+        return found==liveObjects.end()?nullptr:found->second;
+    }
+    // Dense pool order is independent of hierarchy order. New attachments wait
+    // for the next traversal. Disabled components are visible to the caller.
+    template<class T,class F>void EachComponent(F&& visit){
+        static_assert(std::is_base_of_v<Component,T>);
+        if(tearingDown)return;
+        VisitScene([&]{
+            componentStorage.Each<T>([&](T& component){
+                auto& owner=component.GetGameObject();
+                if(!owner.IsPendingDestroy())owner.VisitComponents([&]{visit(component);});
+            });
+        });
+    }
+    void Destroy(EntityID id){
+        RICE_BENCHMARK_FUNCTION();
+        if(auto* object=Find(id))MarkDestroyed(*object);
+    }
+    void FlushDestroyed(){
+        RICE_BENCHMARK_FUNCTION();
+        if(tearingDown)return;
+        if(sceneVisits){deferredDestroyFlush=true;return;}
+        deferredDestroyFlush=false;
+        componentStorage.Each<Anchor>([&](Anchor& anchor){
+            if(anchor.child&&!Find(anchor.child))anchor.child=0;
+        });
+        if(objects.size()==liveObjects.size())return;
+        // A directly invoked lifecycle callback can still be using a pending
+        // object or its parent. Retire the hierarchy together at the next flush.
+        for(const auto& object:objects)
+            if(object->pendingDestroy&&(object->componentVisits||object->flushingComponents)){
+                deferredDestroyFlush=true;
+                return;
+            }
+        // Finish editing the scene's owning vector before OnDestroy can spawn objects.
+        std::vector<Scope<GameObject>> discarded;
+        discarded.reserve(objects.size()-liveObjects.size());
+        for(auto& object:objects)
+            if(object->pendingDestroy)discarded.push_back(std::move(object));
+        std::erase_if(objects,[](const auto& object){return !object;});
+    }
+    void Flush(){
+        RICE_BENCHMARK_FUNCTION();
+        VisitObjectsInOrder([](GameObject& object){object.FlushComponents();});
+        FlushDestroyed();
+    }
     void PlaceSibling(EntityID source,EntityID reference,bool after){
         RICE_BENCHMARK_FUNCTION();
         if(source==reference)return;auto* a=Find(source);auto* b=Find(reference);
@@ -318,8 +500,16 @@ public:
     }
     const auto& GetObjects() const{ RICE_BENCHMARK_FUNCTION(); return objects;}
     size_t GetObjectCount() const{ RICE_BENCHMARK_FUNCTION(); return objects.size();}
-    void Update(float dt){ RICE_BENCHMARK_FUNCTION(); if(!std::isfinite(dt)||dt<0)throw std::invalid_argument("Invalid delta time");auto n=objects.size();for(size_t i=0;i<n;++i)objects[i]->Update(dt);}
-    void LateUpdate(float dt){auto n=objects.size();for(size_t i=0;i<n;++i)if(objects[i]->IsActive())objects[i]->EachComponent([&](Component& c){if(c.enabled)c.LateUpdate(dt);});}
-    void Render(){ RICE_BENCHMARK_FUNCTION(); auto n=objects.size();for(size_t i=0;i<n;++i)objects[i]->Render();}
+    void Update(float dt){
+        RICE_BENCHMARK_FUNCTION();
+        if(!std::isfinite(dt)||dt<0)throw std::invalid_argument("Invalid delta time");
+        VisitObjectsInOrder([&](GameObject& object){object.Update(dt);});
+    }
+    void LateUpdate(float dt){
+        VisitObjectsInOrder([&](GameObject& object){
+            if(object.IsActive())object.EachComponent([&](Component& c){if(c.enabled)c.LateUpdate(dt);});
+        });
+    }
+    void Render(){ RICE_BENCHMARK_FUNCTION(); VisitObjectsInOrder([](GameObject& object){object.Render();});}
 };
 }

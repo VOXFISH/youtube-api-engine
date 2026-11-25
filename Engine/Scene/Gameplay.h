@@ -2,6 +2,7 @@
 #include "Rice/Benchmark.h"
 #include "Components.h"
 #include "SpatialBVH.h"
+#include "Scripting/ScriptRuntime.h"
 #include "Audio/Audio.h"
 #include "Input/Input.h"
 #include <map>
@@ -35,6 +36,54 @@ public:
 private:
     using Pair=std::pair<EntityID,EntityID>;
     using Generations=std::pair<uint64_t,uint64_t>;
+    // Script predicates query the last physics interval without consuming it.
+    // Registering observers avoids copying names or histories in ordinary scenes.
+    struct ScriptPeer {
+        EntityID id;
+        uint64_t generation;
+        bool trigger;
+        auto operator<=>(const ScriptPeer&) const = default;
+    };
+    struct ContactRecord { ScriptPeer peer; std::string name; };
+    struct Observations {
+        uint64_t generation{};
+        size_t subscribers{};
+        std::map<ScriptPeer,std::string> current, next;
+        std::vector<ContactRecord> enter, overlap, exit;
+    };
+    std::map<EntityID, Observations> scriptObservers;
+    void Observe(Scene& scene, EntityID owner, EntityID other, bool trigger) {
+        auto found=scriptObservers.find(owner);
+        if(found==scriptObservers.end())return;
+        auto* object=other ? scene.Find(other) : nullptr;
+        if(other && !object)return;
+        ScriptPeer key{other,object?object->GetPoolGeneration():0,trigger};
+        found->second.next.emplace(key,object?object->name:"Ground");
+    }
+    void FinishObservations(Scene& scene) {
+        for(auto& [owner,history]:scriptObservers){
+            auto* object=scene.Find(owner);
+            if(!object||object->IsPendingDestroy()||object->IsPoolAvailable()){
+                auto subscribers=history.subscribers;
+                history={};
+                history.subscribers=subscribers;
+                continue;
+            }
+            if(history.generation!=object->GetPoolGeneration()){
+                history.current.clear();history.enter.clear();history.exit.clear();
+                history.generation=object->GetPoolGeneration();
+            }
+            history.overlap.clear();
+            for(const auto& [peer,name]:history.next){
+                history.overlap.push_back({peer,name});
+                if(!history.current.contains(peer))history.enter.push_back({peer,name});
+            }
+            for(const auto& [peer,name]:history.current)
+                if(!history.next.contains(peer))history.exit.push_back({peer,name});
+            history.current.swap(history.next);
+            history.next.clear();
+        }
+    }
     std::map<Pair,bool> previous;
     std::map<Pair,Generations> previousGenerations;
     float accumulator=0;
@@ -135,12 +184,19 @@ private:
                 auto* collider=object->GetComponent<BoxCollider>();auto* body=object->GetComponent<Rigidbody>();
                 if(collider->isTrigger||!body||!body->enabled||body->kinematic)continue;
                 auto [low,high]=collider->GetBounds();
+                // Correcting the penetration puts a resting body exactly on y=0.
+                // Retain this contact until it actually moves away from the plane.
+                if(!scriptObservers.empty()&&low.y<=.00001f)Observe(scene,object->GetID(),0,false);
                 if(low.y<0){object->TranslateWorld({0,-low.y,0});collider->overlapping=true;
                     if(body->velocity.y<0)body->velocity.y=-body->velocity.y*glm::clamp(body->restitution,0.f,1.f);
                 }
             }
         }
         for(auto& [pair,trigger]:contacts){
+            if(!scriptObservers.empty()){
+                Observe(scene,pair.first,pair.second,trigger);
+                Observe(scene,pair.second,pair.first,trigger);
+            }
             auto old=previous.find(pair);
             bool same=old!=previous.end()&&previousGenerations.at(pair)==generations.at(pair);
             if(same&&old->second!=trigger)Notify(scene,pair,old->second,2);
@@ -149,9 +205,36 @@ private:
         for(auto& [pair,trigger]:previous)if(!contacts.contains(pair))Notify(scene,pair,trigger,2,&previousGenerations.at(pair));
         previous=std::move(contacts);
         previousGenerations=std::move(generations);
+        FinishObservations(scene);
     }
 public:
-    void Reset(){ RICE_BENCHMARK_FUNCTION(); previous.clear();previousGenerations.clear();accumulator=0;bodyIDs.clear();bodyBounds.clear();broadphase=SpatialBVH{};broadphaseStats={};}
-    void Update(Scene& scene,float dt){ RICE_BENCHMARK_FUNCTION(); if(!std::isfinite(dt)||dt<0)throw std::invalid_argument("Invalid physics dt");broadphaseStats={};accumulator+=std::min(dt,.1f);while(accumulator>=1.f/60){Step(scene,1.f/60);accumulator-=1.f/60;}}
+    void TrackScriptContacts(EntityID owner){++scriptObservers[owner].subscribers;}
+    void UntrackScriptContacts(EntityID owner){
+        auto found=scriptObservers.find(owner);
+        if(found!=scriptObservers.end()&&!--found->second.subscribers)scriptObservers.erase(found);
+    }
+    bool ContactAt(EntityID owner,int phase,int index,Scripting::Contact& out)const{
+        auto found=scriptObservers.find(owner);
+        if(found==scriptObservers.end()||index<0)return false;
+        const auto& history=found->second;
+        const std::vector<ContactRecord>* records=nullptr;
+        switch(static_cast<Scripting::Phase>(phase)){
+        case Scripting::Phase::Collision: records=&history.enter;break;
+        case Scripting::Phase::Overlap: records=&history.overlap;break;
+        case Scripting::Phase::OverlapEnd: records=&history.exit;break;
+        default:return false;
+        }
+        if(static_cast<size_t>(index)>=records->size())return false;
+        const auto& item=(*records)[static_cast<size_t>(index)];
+        out={item.peer.id,item.peer.id==0,item.peer.trigger,item.name.c_str()};
+        return true;
+    }
+    void Reset(){ RICE_BENCHMARK_FUNCTION(); previous.clear();previousGenerations.clear();scriptObservers.clear();accumulator=0;bodyIDs.clear();bodyBounds.clear();broadphase=SpatialBVH{};broadphaseStats={};}
+    void Update(Scene& scene,float dt){
+        RICE_BENCHMARK_FUNCTION();
+        if(!std::isfinite(dt)||dt<0)throw std::invalid_argument("Invalid physics dt");
+        for(auto& [id,history]:scriptObservers){history.enter.clear();history.exit.clear();}
+        broadphaseStats={};accumulator+=std::min(dt,.1f);while(accumulator>=1.f/60){Step(scene,1.f/60);accumulator-=1.f/60;}
+    }
 };
 }

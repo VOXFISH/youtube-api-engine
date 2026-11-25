@@ -1,5 +1,5 @@
 add_library(RiceStreaming STATIC CycleScheduler.cpp CommandPattern.cpp CycleDefinition.cpp)
-target_include_directories(RiceStreaming PUBLIC ${PROJECT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/Engine)
+target_include_directories(RiceStreaming PUBLIC ${PROJECT_SOURCE_DIR}/.. ${PROJECT_SOURCE_DIR})
 target_link_libraries(RiceStreaming PUBLIC RiceBuildOptions)
 target_sources(RiceCore PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/YouTubeListener.cpp)
 target_link_libraries(RiceCore PUBLIC RiceStreaming)

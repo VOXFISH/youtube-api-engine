@@ -31,7 +31,7 @@ jobs:
           if ($LASTEXITCODE) { throw 'Mesa extraction failed' }
       - name: Run the committed package without SDKs or source files
         run: |
-          ./scripts/Verify-Demo.ps1 -PackageRoot $env:GITHUB_WORKSPACE -OutputDirectory "$env:RUNNER_TEMP/rice-demo-verification" -MesaDirectory "$env:RUNNER_TEMP/rice-mesa/x64"
+          ./Engine/scripts/Verify-Demo.ps1 -PackageRoot $env:GITHUB_WORKSPACE -OutputDirectory "$env:RUNNER_TEMP/rice-demo-verification" -MesaDirectory "$env:RUNNER_TEMP/rice-mesa/x64"
       - name: Preserve verification results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

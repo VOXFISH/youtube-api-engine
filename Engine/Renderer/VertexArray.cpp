@@ -72,13 +72,13 @@ namespace Rice
             {
                 const uint32_t index = m_VertexBufferIndex++;
                 glEnableVertexAttribArray(index);
-                glVertexAttribPointer(
-                    index,
-                    components,
-                    ShaderDataTypeToOpenGLBaseType(element.type),
-                    element.isNormalized ? GL_TRUE : GL_FALSE,
-                    static_cast<GLsizei>(layout.GetStride()),
-                    reinterpret_cast<const void*>(static_cast<uintptr_t>(element.offset + column * columns * sizeof(float))));
+                const auto baseType = ShaderDataTypeToOpenGLBaseType(element.type);
+                const auto stride = static_cast<GLsizei>(layout.GetStride());
+                const auto offset = reinterpret_cast<const void*>(static_cast<uintptr_t>(element.offset + column * columns * sizeof(float)));
+                if (baseType == GL_INT && !element.isNormalized)
+                    glVertexAttribIPointer(index, components, baseType, stride, offset);
+                else
+                    glVertexAttribPointer(index, components, baseType, element.isNormalized ? GL_TRUE : GL_FALSE, stride, offset);
                 glVertexAttribDivisor(index, divisor);
             }
         }

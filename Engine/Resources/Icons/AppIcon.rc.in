@@ -1,0 +1,2 @@
+// Windows Explorer and GLFW use this icon group for the executable and its windows.
+GLFW_ICON ICON "@icon_dir@/@icon@.ico"

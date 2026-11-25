@@ -105,8 +105,10 @@ struct ShapeMesh {
         RICE_BENCHMARK_FUNCTION();
         std::vector<float> result;result.reserve(indices.size()*8);
         for(size_t t=0;t+2<indices.size();t+=3){
-            auto n=glm::cross(positions[indices[t+1]]-positions[indices[t]],positions[indices[t+2]]-positions[indices[t]]);
-            n=glm::length(n)>1e-8f?glm::normalize(n):Vector3(0,0,1);
+            const glm::dvec3 first(positions[indices[t]]), second(positions[indices[t+1]]), third(positions[indices[t+2]]);
+            const auto cross=glm::cross(second-first,third-first);
+            // Imported dimensions are in meters. Tiny, valid faces still have a surface normal.
+            const auto n=glm::dot(cross,cross)>0.0?Vector3(glm::normalize(cross)):Vector3(0,0,1);
             for(size_t c=t;c<t+3;++c){auto p=positions[indices[c]];auto tex=uv[c];result.insert(result.end(),{p.x,p.y,p.z,n.x,n.y,n.z,tex.x,tex.y});}
         }
         return result;

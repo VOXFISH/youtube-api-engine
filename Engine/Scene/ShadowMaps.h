@@ -16,11 +16,12 @@ struct ShadowLight {
     bool castsShadow=true;
 };
 
-// All lights share one array sampler. A point light occupies six adjacent layers
-// in cubemap order; a directional light occupies one. This stays within GL 3.3's
-// sampler limits without dynamically indexing arrays of opaque sampler objects.
+// All lights share depth and owner arrays. A point light has six consecutive
+// faces in cubemap order and a directional light has one.
 inline const char* ShadowSamplingGLSL=R"(
 uniform sampler2DArray shadowMap;
+uniform usampler2DArray shadowOwnerMap;
+uniform int shadowFaceCount;
 uniform int shadowLightCount;
 uniform int shadowKind[8],shadowLayer[8];
 uniform mat4 shadowDirectionalVP[8];
@@ -35,7 +36,7 @@ vec3 shadowPointProjection(vec3 d,out int face){
     else{z=a.z;face=d.z>=0.?4:5;uv=vec2(d.z>=0.?d.x:-d.x,-d.y);}
     return vec3(uv/max(z,.000001)*.5+.5,z);
 }
-float shadowVisibility(int i,vec3 position,vec3 normal){
+float shadowVisibility(int i,vec3 position,vec3 normal,uvec2 receiver){
     if(i<0||i>=shadowLightCount||shadowKind[i]<0)return 1.;
     vec3 n=normalize(normal);vec3 L=-shadowDirection[i];
     vec3 uvDepth;int layer=shadowLayer[i];
@@ -63,7 +64,10 @@ float shadowVisibility(int i,vec3 position,vec3 normal){
     float visibility=0.,texel=1./max(shadowResolution,1.);
     for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
         vec2 uv=clamp(uvDepth.xy+vec2(x,y)*texel,vec2(texel*.5),vec2(1.-texel*.5));
-        float nearest=texture(shadowMap,vec3(uv,float(layer))).r;
+        ivec3 tap=ivec3(ivec2(uv*shadowResolution),layer);
+        if(receiver!=uvec2(0) && texelFetch(shadowOwnerMap,tap,0).rg==receiver)
+            tap.z+=shadowFaceCount;
+        float nearest=texelFetch(shadowMap,tap,0).r;
         visibility+=uvDepth.z-bias<=nearest?1.:0.;
     }
     return visibility/9.;
@@ -84,7 +88,7 @@ private:
         float range=0;
         Matrix4 directionalVP{1};
     };
-    GLuint texture=0,framebuffer=0;
+    GLuint texture=0,owners=0,framebuffer=0;
     int requestedResolution=512,allocatedResolution=0,allocatedLayers=0,hardwareResolutionLimit=0;
     std::vector<ShadowLight> lights;
     std::array<CachedLight,8> cache{};
@@ -125,15 +129,17 @@ private:
     // The callback changes shader/VAO state; retain those bindings as well as all
     // depth-pass state here so editor rendering and nested reflection views agree.
     struct State {
-        GLint draw=0,read=0,viewport[4]{},active=0,array=0,image=0,program=0,vao=0,buffer=0,depthFunction=0,polygonMode[2]{};
-        GLboolean depthWrite=GL_TRUE;
+        GLint draw=0,read=0,viewport[4]{},active=0,array=0,ownerArray=0,image=0,program=0,vao=0,buffer=0,depthFunction=0,polygonMode[2]{};
+        GLboolean depthWrite=GL_TRUE,colorWrite[4]{};
         GLdouble clearDepth=1;
-        bool scissor=false,depth=false,blend=false,cull=false,offset=false,discard=false,depthClamp=false;
+        bool scissor=false,depth=false,blend=false,cull=false,offset=false,discard=false,depthClamp=false,logicOp=false;
         State(){
             glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&draw);glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&read);
             glGetIntegerv(GL_VIEWPORT,viewport);glGetIntegerv(GL_ACTIVE_TEXTURE,&active);
             glActiveTexture(GL_TEXTURE0);glGetIntegerv(GL_TEXTURE_BINDING_2D,&image);
             glActiveTexture(GL_TEXTURE3);glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY,&array);
+            glActiveTexture(GL_TEXTURE4);glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY,&ownerArray);
+            glGetBooleani_v(GL_COLOR_WRITEMASK,0,colorWrite);logicOp=glIsEnabled(GL_COLOR_LOGIC_OP);
             glGetIntegerv(GL_CURRENT_PROGRAM,&program);glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&vao);glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&buffer);
             glGetIntegerv(GL_DEPTH_FUNC,&depthFunction);glGetBooleanv(GL_DEPTH_WRITEMASK,&depthWrite);glGetDoublev(GL_DEPTH_CLEAR_VALUE,&clearDepth);
             scissor=glIsEnabled(GL_SCISSOR_TEST);depth=glIsEnabled(GL_DEPTH_TEST);blend=glIsEnabled(GL_BLEND);cull=glIsEnabled(GL_CULL_FACE);offset=glIsEnabled(GL_POLYGON_OFFSET_FILL);
@@ -142,6 +148,7 @@ private:
         ~State(){
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER,draw);glBindFramebuffer(GL_READ_FRAMEBUFFER,read);glViewport(viewport[0],viewport[1],viewport[2],viewport[3]);
             glDepthFunc(depthFunction);glDepthMask(depthWrite);glClearDepth(clearDepth);
+            glColorMaski(0,colorWrite[0],colorWrite[1],colorWrite[2],colorWrite[3]);Set(GL_COLOR_LOGIC_OP,logicOp);
             Set(GL_SCISSOR_TEST,scissor);Set(GL_DEPTH_TEST,depth);Set(GL_BLEND,blend);Set(GL_CULL_FACE,cull);Set(GL_POLYGON_OFFSET_FILL,offset);
             Set(GL_RASTERIZER_DISCARD,discard);Set(GL_DEPTH_CLAMP,depthClamp);glPolygonMode(GL_FRONT_AND_BACK,polygonMode[0]);
             // A mesh upload may replace the previously bound VAO/buffer. A
@@ -151,21 +158,32 @@ private:
             glBindVertexArray(vao&&glIsVertexArray(vao)?vao:0);
             glBindBuffer(GL_ARRAY_BUFFER,buffer&&glIsBuffer(buffer)?buffer:0);
             glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,image);
-            glActiveTexture(GL_TEXTURE3);glBindTexture(GL_TEXTURE_2D_ARRAY,array);glActiveTexture(active);
+            glActiveTexture(GL_TEXTURE3);glBindTexture(GL_TEXTURE_2D_ARRAY,array);
+            glActiveTexture(GL_TEXTURE4);glBindTexture(GL_TEXTURE_2D_ARRAY,ownerArray);glActiveTexture(active);
         }
         static void Set(GLenum capability,bool enabled){if(enabled)glEnable(capability);else glDisable(capability);}
     };
+    static void AllocateArray(GLuint name,GLint format,GLenum channels,GLenum type,int size,int layers){
+        glBindTexture(GL_TEXTURE_2D_ARRAY,name);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY,0,format,size,size,layers,0,channels,type,nullptr);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    }
 public:
     ShadowMaps(){kinds.fill(-1);layers.fill(-1);directionalVP.fill(Matrix4(1));}
     ShadowMaps(const ShadowMaps&)=delete;
     ShadowMaps& operator=(const ShadowMaps&)=delete;
-    ~ShadowMaps(){if(framebuffer)glDeleteFramebuffers(1,&framebuffer);if(texture)glDeleteTextures(1,&texture);}
+    ~ShadowMaps(){if(framebuffer)glDeleteFramebuffers(1,&framebuffer);if(texture)glDeleteTextures(1,&texture);if(owners)glDeleteTextures(1,&owners);}
     void SetResolution(int value){requestedResolution=std::clamp(value,64,2048);}
     void SetCachingEnabled(bool enabled){cachingEnabled=enabled;}
     int Resolution()const{return allocatedResolution?allocatedResolution:requestedResolution;}
     const Stats& GetStats()const{return stats;}
     const std::vector<ShadowLight>& Lights()const{return lights;}
     GLuint Texture()const{return texture;}
+    static void SetSamplerUnits(const Ref<Shader>& shader){
+        shader->SetUniformInt("shadowMap",3);
+        shader->SetUniformInt("shadowOwnerMap",4);
+    }
     template<class Draw> void Update(uint64_t sceneID,const std::vector<ShadowLight>& source,const SpatialBounds& sceneBounds,const std::array<uint64_t,8>& casterRevisions,Draw draw){
         stats={};lights.assign(source.begin(),source.begin()+std::min(source.size(),size_t(8)));
         kinds.fill(-1);layers.fill(-1);int layerCount=0;
@@ -195,18 +213,19 @@ public:
         if(!anyDirty)return;
         State state;
         if(!texture)glGenTextures(1,&texture);
+        if(!owners)glGenTextures(1,&owners);
         if(!framebuffer)glGenFramebuffers(1,&framebuffer);
-        glActiveTexture(GL_TEXTURE3);glBindTexture(GL_TEXTURE_2D_ARRAY,texture);
+        glActiveTexture(GL_TEXTURE3);
         if(reallocate){
-            glTexImage3D(GL_TEXTURE_2D_ARRAY,0,GL_DEPTH_COMPONENT24,resolution,resolution,layerCount,0,GL_DEPTH_COMPONENT,GL_FLOAT,nullptr);
-            glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_COMPARE_MODE,GL_NONE);
+            // Each face keeps two depths: the closest caster and the closest different caster.
+            AllocateArray(texture,GL_DEPTH_COMPONENT24,GL_DEPTH_COMPONENT,GL_FLOAT,resolution,2*layerCount);
+            AllocateArray(owners,GL_RG32UI,GL_RG_INTEGER,GL_UNSIGNED_INT,resolution,layerCount);
             allocatedResolution=resolution;allocatedLayers=layerCount;for(auto& value:cache)value.valid=false;
         }
         // Avoid a feedback binding while the same texture is attached for writing.
         glBindTexture(GL_TEXTURE_2D_ARRAY,0);
-        glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glDrawBuffer(GL_NONE);glReadBuffer(GL_NONE);
+        glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glReadBuffer(GL_NONE);
+        glColorMaski(0,GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDisable(GL_COLOR_LOGIC_OP);
         glViewport(0,0,resolution,resolution);glDisable(GL_SCISSOR_TEST);glDisable(GL_BLEND);glDisable(GL_CULL_FACE);glDisable(GL_POLYGON_OFFSET_FILL);
         glDisable(GL_RASTERIZER_DISCARD);glDisable(GL_DEPTH_CLAMP);glPolygonMode(GL_FRONT_AND_BACK,GL_FILL);
         glEnable(GL_DEPTH_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LESS);glClearDepth(1);
@@ -215,20 +234,37 @@ public:
             const auto& light=lights[i];auto& previous=cache[i];
             previous.valid=false;
             for(int face=0;face<(kinds[i]==1?1:6);++face){
-                glFramebufferTextureLayer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,texture,0,layers[i]+face);
-                if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)throw std::runtime_error("Shadow framebuffer incomplete");
-                glClear(GL_DEPTH_BUFFER_BIT);
+                const int layer=layers[i]+face;
                 Matrix4 vp=directionalVP[i];
                 if(kinds[i]==0)vp=glm::perspective(glm::radians(90.f),1.f,nearPlanes[i],light.range)*CubeCaptureView(light.position,face);
-                draw(i,face,vp);++stats.faces;
+                glActiveTexture(GL_TEXTURE4);glBindTexture(GL_TEXTURE_2D_ARRAY,0);
+                glFramebufferTextureLayer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,texture,0,layer);
+                glFramebufferTextureLayer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,owners,0,layer);
+                glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)throw std::runtime_error("Shadow framebuffer incomplete");
+                constexpr GLuint noOwner[4]{};
+                glClearBufferuiv(GL_COLOR,0,noOwner);
+                glClear(GL_DEPTH_BUFFER_BIT);
+                draw(i,face,vp,layer,false);
+
+                // Read the owner of this texel only after detaching the color target.
+                glFramebufferTextureLayer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,0,0,0);
+                glDrawBuffer(GL_NONE);
+                glFramebufferTextureLayer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,texture,0,layer+layerCount);
+                glActiveTexture(GL_TEXTURE4);glBindTexture(GL_TEXTURE_2D_ARRAY,owners);
+                glClear(GL_DEPTH_BUFFER_BIT);
+                draw(i,face,vp,layer,true);
+                ++stats.faces;
             }
             previous={true,light.id,sceneID,casterRevisions[i],kinds[i],layers[i],light.position,light.direction,light.range,directionalVP[i]};++stats.updates;
         }
     }
     void Bind(const Ref<Shader>& shader)const{
-        shader->SetUniformInt("shadowMap",3);shader->SetUniformInt("shadowLightCount",static_cast<int>(lights.size()));
+        SetSamplerUnits(shader);
+        shader->SetUniformInt("shadowFaceCount",allocatedLayers);shader->SetUniformInt("shadowLightCount",static_cast<int>(lights.size()));
         shader->SetUniformFloat("shadowResolution",float(Resolution()));
-        GLint active=0;glGetIntegerv(GL_ACTIVE_TEXTURE,&active);glActiveTexture(GL_TEXTURE3);glBindTexture(GL_TEXTURE_2D_ARRAY,texture);glActiveTexture(active);
+        GLint active=0;glGetIntegerv(GL_ACTIVE_TEXTURE,&active);glActiveTexture(GL_TEXTURE3);glBindTexture(GL_TEXTURE_2D_ARRAY,texture);
+        glActiveTexture(GL_TEXTURE4);glBindTexture(GL_TEXTURE_2D_ARRAY,owners);glActiveTexture(active);
         for(size_t i=0;i<lights.size();++i){
             const auto index="["+std::to_string(i)+"]";
             shader->SetUniformInt("shadowKind"+index,kinds[i]);shader->SetUniformInt("shadowLayer"+index,layers[i]);

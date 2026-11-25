@@ -222,7 +222,7 @@ template<class T, glm::qualifier Q> struct ProxyMembers<glm::vec<3, T, Q>> {
         : x(ComponentAccess<glm::vec<3, T, Q>, T>(root, 0)), y(ComponentAccess<glm::vec<3, T, Q>, T>(root, 1)),
           z(ComponentAccess<glm::vec<3, T, Q>, T>(root, 2)) {}
 };
-template<Encodable T> class Field : public ValueProxy<T> {
+template<Routable T> class Field : public ValueProxy<T> {
     struct State {
         T defaults;
         std::string description;

@@ -1,148 +1,20 @@
 #pragma once
 #include "Rice/Benchmark.h"
-#include "SceneCodec.h"
+#include "Project.h"
 #include "Prefab.h"
+#include "Scripting/NativeScriptCompiler.h"
+#include "Scripting/ScriptHost.h"
 #include "Rice/Debug.h"
 #include <chrono>
 namespace Rice {
-class Project {
-    fs::path activeScene = "main.rice";
-
-    fs::path ValidateScenePath(const fs::path& relative) const {
-        RICE_BENCHMARK_FUNCTION();
-        if(relative.is_absolute() || relative.empty() || relative.extension() != ".rice")
-            throw std::invalid_argument("Choose a project scene file");
-        if(relative != "main.rice" && relative.parent_path() != "Scenes")
-            throw std::invalid_argument("Scenes belong in the project's Scenes folder");
-        auto target = fs::weakly_canonical(root / relative);
-        auto inside = target.lexically_relative(fs::weakly_canonical(root));
-        if(inside.empty() || *inside.begin() == "..")
-            throw std::invalid_argument("Scene path escapes the project");
-        return target;
-    }
-public:
-    fs::path root;
-    AssetDatabase assets;
-    InputActions input;
-    // Resolve only saved projects. Opening a typo must never create Assets or
-    // turn an arbitrary scene file into a new project directory.
-    static fs::path ResolveSavedRoot(const fs::path& selected){
-        RICE_BENCHMARK_FUNCTION();
-        if(selected.empty())throw std::invalid_argument("Choose a saved project");
-        auto directory=fs::absolute(selected).lexically_normal();
-        if(fs::is_regular_file(directory)){
-            if(directory.filename()!="project.rice"&&directory.filename()!="main.rice")
-                throw std::invalid_argument("Choose project.rice, or a legacy main.rice project");
-            directory=directory.parent_path();
-        }
-        if(!fs::is_directory(directory)||(!fs::is_regular_file(directory/"project.rice")&&!fs::is_regular_file(directory/"main.rice")))
-            throw std::runtime_error("The selected path is not a saved Rice project");
-        fs::path active="main.rice";
-        if(fs::is_regular_file(directory/"project.rice")){
-            std::istringstream in(ReadFile(directory/"project.rice"));std::string magic;int version=0,count=0;
-            in>>magic>>version>>count;
-            if(magic!="RICE_PROJECT"||(version!=1&&version!=2)||count<0||count>128)throw std::runtime_error("Invalid project file");
-            for(int i=0;i<count;++i){std::string name;int key=0;in>>std::quoted(name)>>key;if(!in||key<32||key>348)throw std::runtime_error("Invalid input binding");}
-            if(version==2){std::string marker,sceneName;in>>marker>>std::quoted(sceneName);
-                if(!in||marker!="ActiveScene")throw std::runtime_error("Invalid active scene");
-                active=fs::path(std::u8string(sceneName.begin(),sceneName.end()));}
-        }
-        if(active.is_absolute()||active.empty()||active.extension()!=".rice"||(active!="main.rice"&&active.parent_path()!="Scenes"))
-            throw std::runtime_error("Invalid active scene path");
-        auto target=fs::weakly_canonical(directory/active);auto relative=target.lexically_relative(fs::weakly_canonical(directory));
-        if(relative.empty()||*relative.begin()==".."||!fs::is_regular_file(target))throw std::runtime_error("The active project scene is missing or outside the project");
-        return directory;
-    }
-    explicit Project(fs::path directory):root(fs::absolute(directory)),assets(root/"Assets") {
-        RICE_BENCHMARK_FUNCTION();
-        if(fs::exists(root/"project.rice")){
-            std::istringstream in(ReadFile(root/"project.rice"));std::string magic;int version=0,count=0;in>>magic>>version>>count;
-            if(magic!="RICE_PROJECT"||(version!=1&&version!=2)||count<0||count>128)throw std::runtime_error("Invalid project file");
-            input.keys.clear();for(int i=0;i<count;++i){std::string name;int key;in>>std::quoted(name)>>key;if(!in||key<32||key>348)throw std::runtime_error("Invalid input binding");input.keys[name]=key;}
-            if(version==2){
-                std::string marker,selected;
-                in>>marker>>std::quoted(selected);
-                if(!in||marker!="ActiveScene")throw std::runtime_error("Invalid active scene");
-                activeScene=fs::path(std::u8string(selected.begin(),selected.end()));
-                ValidateScenePath(activeScene);
-            }
-        }
-    }
-    void Save(){
-        RICE_BENCHMARK_FUNCTION();
-        std::ostringstream out;
-        out<<"RICE_PROJECT 2 "<<input.keys.size()<<'\n';
-        for(auto& [name,key]:input.keys)out<<std::quoted(name)<<' '<<key<<'\n';
-        auto utf8=activeScene.generic_u8string();
-        out<<"ActiveScene "<<std::quoted(std::string(utf8.begin(),utf8.end()))<<'\n';
-        AtomicWrite(root/"project.rice",out.str());
-    }
-    const fs::path& ActiveScene() const { RICE_BENCHMARK_FUNCTION(); return activeScene; }
-    fs::path ScenePath() const { RICE_BENCHMARK_FUNCTION(); return ValidateScenePath(activeScene); }
-    fs::path ScenePath(const fs::path& relative) const { RICE_BENCHMARK_FUNCTION(); return ValidateScenePath(relative); }
-    std::vector<fs::path> SceneFiles() const {
-        RICE_BENCHMARK_FUNCTION();
-        std::vector<fs::path> result;
-        if(fs::is_regular_file(root/"main.rice"))result.emplace_back("main.rice");
-        if(fs::is_directory(root/"Scenes"))for(const auto& file:fs::directory_iterator(root/"Scenes")){
-            if(file.is_regular_file()&&file.path().extension()==".rice"){
-                auto relative=fs::path("Scenes")/file.path().filename();
-                ValidateScenePath(relative);
-                result.push_back(std::move(relative));
-            }
-        }
-        std::sort(result.begin(),result.end());
-        return result;
-    }
-    static fs::path NamedScene(const std::string& name) {
-        RICE_BENCHMARK_FUNCTION();
-        fs::path filename(std::u8string(name.begin(),name.end()));
-        if(name.empty()||name.find_first_not_of(" \t\r\n")==std::string::npos||
-           filename.has_parent_path()||name.find_first_of("<>:\"/\\|?*")!=std::string::npos)
-            throw std::invalid_argument("Enter a scene name without path separators");
-        if(filename.extension()!=".rice")filename+=".rice";
-        return fs::path("Scenes")/filename;
-    }
-    void SelectScene(const fs::path& relative) {
-        RICE_BENCHMARK_FUNCTION();
-        if(!fs::is_regular_file(ValidateScenePath(relative)))throw std::runtime_error("Scene file does not exist");
-        auto previous=activeScene;
-        activeScene=relative;
-        try { Save(); } catch(...) { activeScene=std::move(previous);throw; }
-    }
-    void Export(Scene& scene,ComponentRegistry& registry,const fs::path& binaries,const fs::path& destination){
-        RICE_BENCHMARK_FUNCTION();
-        auto target=fs::absolute(destination).lexically_normal();if(fs::exists(target))throw std::runtime_error("Choose a new, empty export directory");
-        auto relative=target.lexically_relative(root.lexically_normal());if(!relative.empty()&&*relative.begin()!="..")throw std::runtime_error("Export outside the project directory");
-        if(!fs::is_regular_file(binaries/"RicePlayer.exe"))throw std::runtime_error("Build RicePlayer first");
-        for(auto& obj:scene.GetObjects()){
-            if(auto* material=obj->GetComponent<Material>();material&&!material->albedoAsset.empty())assets.Resolve(material->albedoAsset);
-            if(auto* mesh=obj->GetComponent<MeshRenderer>())for(const auto& [index,value]:mesh->triangleMaterials.faces)if(!value.albedoAsset.empty())assets.Resolve(value.albedoAsset);
-            if(auto* sprite=obj->GetComponent<SpriteRenderer>();sprite&&!sprite->asset.empty())assets.Resolve(sprite->asset);
-            if(auto* sound=obj->GetComponent<AudioSource>();sound&&!sound->clip.empty())assets.Resolve(sound->clip);
-        }
-        if(scene.settings.skybox&&!scene.settings.skyboxAsset.empty())assets.Resolve(scene.settings.skyboxAsset);
-        auto sceneText=SceneCodec(registry).Encode(scene,false);
-        fs::create_directories(target);
-        for(auto& file:fs::directory_iterator(binaries))if(file.is_regular_file()&&(file.path().extension()==".dll"||file.path().filename()=="RicePlayer.exe"||file.path().filename()=="RicePlayer.control"))fs::copy_file(file.path(),target/file.path().filename());
-        fs::create_directories(target/"Project");fs::copy(root/"Assets",target/"Project"/"Assets",fs::copy_options::recursive);
-        for(const auto& sceneFile:SceneFiles()){
-            if(sceneFile==activeScene)continue;
-            auto destinationScene=target/"Project"/sceneFile;
-            fs::create_directories(destinationScene.parent_path());
-            auto other=SceneCodec(registry).Load(ScenePath(sceneFile));
-            AtomicWrite(destinationScene,SceneCodec(registry).Encode(*other,false));
-        }
-        AtomicWrite(target/"Project"/activeScene,sceneText);
-        Save();fs::copy_file(root/"project.rice",target/"Project"/"project.rice");
-        AtomicWrite(target/"README.txt","Run RicePlayer.exe. Project assets and FMOD runtime must remain beside the player.\n");
-    }
-};
 class Workspace {
     std::map<EntityID,std::string> loadedImages;
     std::set<std::string> reported;
     bool jumpHeld=false;
     uint64_t boundScene=0;
+    // Keep the decoded edit representation as the baseline. Opening an older
+    // on-disk format can legitimately change the spelling of serialized fields.
+    std::string savedScene;
 
     void ResetRuntime() {
         RICE_BENCHMARK_FUNCTION();
@@ -162,6 +34,7 @@ public:
     PrefabPool prefabPool;
     PhysicsSystem physics;
     std::vector<std::string> logs;
+    std::map<std::string,std::map<uint64_t,std::string>> runtimeScriptErrors;
     std::map<std::string,std::function<void()>> actions;
     int score=0;
     double updateMilliseconds=0;
@@ -169,9 +42,9 @@ public:
         RICE_BENCHMARK_FUNCTION();
         if(registerTypes)registerTypes(registry);
         actions["Increment"]=[this]{ RICE_BENCHMARK_FUNCTION(); ++score;Log("Score: "+std::to_string(score));};actions["Quit"]=[]{ RICE_BENCHMARK_FUNCTION(); };
-        if(fs::exists(project->ScenePath()))editor.Load(project->ScenePath());
-        else if(fs::exists(project->root/"project.rice"))throw std::runtime_error("The active project scene is missing");
-        prefabs.SetDirectory(project->assets.Root()/"Prefabs");
+        if(project->HasScene(project->ActiveScene()))editor.Replace(project->LoadScene(registry));
+        savedScene=editor.DocumentSnapshot();
+        prefabs.SetDirectory(project->root/"Prefabs",project->assets.Root()/"Prefabs");
         BindScene();
     }
     ~Workspace() {
@@ -179,6 +52,8 @@ public:
         editor.scene->SetPrefabCallbacks({},{},{});
         try { prefabPool.Clear(editor.scene.get()); } catch(...) {}
         if(editor.playing)Benchmark::EndPlay();
+        // Release native continuations while the logger, registry and physics system still exist.
+        editor.scene.reset();
     }
     void BindScene() {
         RICE_BENCHMARK_FUNCTION();
@@ -192,36 +67,59 @@ public:
     }
     void Log(const std::string& text,spdlog::level::level_enum level=spdlog::level::info){ RICE_BENCHMARK_FUNCTION(); Debug::Init();Debug::GetClientLogger()->log(level,"{}",text);logs.push_back(text);if(logs.size()>200)logs.erase(logs.begin());}
     void Report(const std::exception& error){ RICE_BENCHMARK_FUNCTION(); if(reported.insert(error.what()).second)Log(error.what(),spdlog::level::err);}
-    void Save(){ RICE_BENCHMARK_FUNCTION(); if(editor.playing)throw std::runtime_error("Stop play before saving");SceneCodec(registry).Save(*editor.scene,project->ScenePath());project->Save();Log("Project saved");}
-    void Open(const fs::path& path){
+    EntityID ImportFbx(const fs::path& source);
+    void SaveScript(const fs::path& destination,const std::string& source) {
+        Scripting::SaveValidatedScript(project->root,destination,source,
+            [this](const std::string& warning){Log(warning,spdlog::level::warn);});
+        runtimeScriptErrors.erase(Scripting::ScriptKey(project->root,destination));
+    }
+    bool HasUnsavedChanges() const {
         RICE_BENCHMARK_FUNCTION();
-        auto next=CreateScope<Project>(Project::ResolveSavedRoot(path));
-        auto scene=SceneCodec(registry).Load(next->ScenePath());
+        if(project->InputBindingsChanged())return true;
+        try { return editor.DocumentSnapshot()!=savedScene; }
+        catch(const std::runtime_error&) { return true; } // A failed save must still allow Cancel or Discard.
+    }
+    void SaveBeforeClose() {
+        RICE_BENCHMARK_FUNCTION();
+        auto document=editor.DocumentSnapshot();
+        project->SaveActiveScene(document);
+        savedScene=std::move(document);
+        Log("Project saved");
+    }
+    void Save(){
+        RICE_BENCHMARK_FUNCTION();
+        if(editor.playing)throw std::runtime_error("Stop play before saving");
+        SaveBeforeClose();
+    }
+    void Open(const fs::path& path,const std::function<void()>& beforeReplace={}){
+        RICE_BENCHMARK_FUNCTION();
+        auto next=CreateScope<Project>(path,true);
+        auto scene=next->LoadScene(registry);
+        auto saved=SceneCodec(registry).Encode(*scene);
+        if(beforeReplace)beforeReplace();
         Stop();
         ResetRuntime();
         project=std::move(next);
+        runtimeScriptErrors.clear();
         editor.Replace(std::move(scene));
-        prefabs.SetDirectory(project->assets.Root()/"Prefabs");
+        savedScene=std::move(saved);
+        prefabs.SetDirectory(project->root/"Prefabs",project->assets.Root()/"Prefabs");
         BindScene();
     }
-    void New(const fs::path& path){
+    void New(const fs::path& path,const std::function<void()>& beforeReplace={}){
         RICE_BENCHMARK_FUNCTION();
-        if(fs::exists(path))throw std::runtime_error("Use a new project folder");
-        auto next=CreateScope<Project>(path);
-        Scene empty;
-        SceneCodec(registry).Save(empty,next->ScenePath());
-        next->Save();
-        Open(path);
+        Open(Project::CreateNew(path),beforeReplace);
     }
     void SwitchScene(const fs::path& relative){
         RICE_BENCHMARK_FUNCTION();
         if(editor.playing)throw std::runtime_error("Stop Play before changing scenes");
         if(relative==project->ActiveScene())return;
-        auto next=SceneCodec(registry).Load(project->ScenePath(relative));
-        Save();
+        auto next=project->LoadScene(registry,relative);
+        auto saved=SceneCodec(registry).Encode(*next);
+        project->SaveScene(*editor.scene,registry,relative);
         ResetRuntime();
-        project->SelectScene(relative);
         editor.Replace(std::move(next));
+        savedScene=std::move(saved);
         BindScene();
         Log("Scene switched");
     }
@@ -229,23 +127,32 @@ public:
         RICE_BENCHMARK_FUNCTION();
         if(editor.playing)throw std::runtime_error("Stop Play before creating a scene");
         auto relative=Project::NamedScene(name);
-        auto target=project->ScenePath(relative);
-        if(fs::exists(target))throw std::runtime_error("A scene with that name already exists");
+        if(project->HasScene(relative))throw std::runtime_error("A scene with that name already exists");
         auto next=duplicate?SceneCodec(registry).Decode(SceneCodec(registry).Encode(*editor.scene)):CreateScope<Scene>();
-        Save();
-        SceneCodec(registry).Save(*next,target);
+        auto saved=SceneCodec(registry).Encode(*next);
+        project->SaveScene(*editor.scene,registry,relative,next.get());
         ResetRuntime();
-        project->SelectScene(relative);
         editor.Replace(std::move(next));
+        savedScene=std::move(saved);
         BindScene();
         Log("Scene created");
     }
-    void Play(){
+    void Play(bool editorPreview=true){
         RICE_BENCHMARK_FUNCTION();
         if(editor.playing)return;
         ResetRuntime();
         editor.Play();
         BindScene();
+        try {
+            Scripting::AttachNativeScripts(*editor.scene,registry,physics,project->root,editorPreview,
+                [this](int level,const std::string& message) {
+                    Log(message,level==2?spdlog::level::err:level==1?spdlog::level::warn:spdlog::level::info);
+                },[this](const std::string& file,uint64_t row,const std::string& message) {
+                    fs::path path(std::u8string(file.begin(),file.end()));
+                    runtimeScriptErrors[Scripting::ScriptKey(project->root,path)][row]=message;
+                });
+            runtimeScriptErrors.clear();
+        } catch (...) { editor.Stop();BindScene();throw; }
         Benchmark::BeginPlay();
     }
     void Pause(){
@@ -289,7 +196,7 @@ public:
         if(!editor.playing)return false;
         return prefabPool.Release(*editor.scene,root);
     }
-    void PlayAudio(AudioSource& source){ RICE_BENCHMARK_FUNCTION(); source.Play(audio,project->assets.Resolve(source.clip).string());}
+    void PlayAudio(AudioSource& source){ RICE_BENCHMARK_FUNCTION(); source.Play(audio,ProjectFile::Utf8(project->assets.Resolve(source.clip)));}
     void Update(float dt,bool captureKeyboard){
         RICE_BENCHMARK_FUNCTION();
         BindScene();

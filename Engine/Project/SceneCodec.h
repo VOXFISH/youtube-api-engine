@@ -28,9 +28,15 @@ public:
         Register<CameraComponent>("Camera",[](auto& c,auto& f){f("Primary",&c.primary);f("Field of view",&c.fieldOfView);f("Near clip",&c.nearClip);f("Far clip",&c.farClip);});
         Register<CameraFollower>("Camera Follower",[](auto& c,auto& f){f("Camera",&c.camera);f("Translation",&c.transform.position);f("Rotation",&c.transform.rotation);f("Scale",&c.transform.localScale);f("Show in Shape Editor",&c.showInEditor);});
         Register<Anchor>("Anchor",[](auto& c,auto& f){f("Child",&c.child);f("Translation",&c.transform.position);f("Rotation",&c.transform.rotation);f("Scale",&c.transform.localScale);f("Show in Shape Editor",&c.showInEditor);});
-        Register<ObjectScript>("ObjectScript",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Script file",&c.scriptFile); });
-        Register<SingletonManager>("SingletonManager",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Script file",&c.scriptFile); });
-        Register<BlankScript>("BlankScript",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Script file",&c.scriptFile); });
+        auto scriptFields = [](ScriptComponentBase& c, const PropertyVisitor& f) {
+            f("Script file",&c.scriptFile);
+            f("Child bindings",&c.childBindings);
+            f("Child reads",&c.childReads);
+            f("Data object key",&c.dataObjectKey);
+        };
+        Register<ObjectScript>("ObjectScript",scriptFields);
+        Register<SingletonManager>("SingletonManager",scriptFields);
+        Register<BlankScript>("BlankScript",scriptFields);
         Register<YouTubeListener>("YouTube Listener",[](auto& c,auto& f){f("Command bindings",&c.commandBindings);});
         Register<ReflectionProbe>("ReflectionProbe",[](auto& c,auto& f){
             RICE_BENCHMARK_FUNCTION();
@@ -87,8 +93,12 @@ struct ComponentSnapshot {
                     if(!input.eof())input>>std::ws;
                     if(input.eof()){*std::get<bool*>(property)=true;return;}
                 }
-                if((type->name=="ObjectScript"||type->name=="BlankScript"||type->name=="SingletonManager")&&std::string_view(key)=="Script file"){
-                    input>>std::ws;if(input.eof()){std::get<std::string*>(property)->clear();return;}
+                if(dynamic_cast<ScriptComponentBase*>(&component)&&std::holds_alternative<std::string*>(property)){
+                    input>>std::ws;
+                    if(input.eof()){
+                        if(std::string_view(key)!="Data object key")std::get<std::string*>(property)->clear();
+                        return;
+                    }
                 }
                 if(type->name=="MeshRenderer"&&std::string_view(key)=="Shape asset"){
                     if(input.eof()){std::get<std::string*>(property)->clear();return;}input>>std::ws;if(input.eof()){std::get<std::string*>(property)->clear();return;}
@@ -161,10 +171,10 @@ public:
                     // Scenes saved before basic shapes contain only Enabled and Color.
                     if(next=="EndComponent"||next=="Cast shadows"||(std::string_view(key)=="Shape"&&next=="Custom mesh")||(std::string_view(key)=="Custom mesh"&&next=="Shape asset")||(std::string_view(key)=="Shape asset"&&next=="Triangle materials"))return;
                 }
-                if((typeName=="ObjectScript"||typeName=="BlankScript"||typeName=="SingletonManager")&&std::string_view(key)=="Script file"){
+                if(dynamic_cast<ScriptComponentBase*>(&c)&&std::holds_alternative<std::string*>(p)){
                     auto position=in.tellg();std::string next;in>>std::quoted(next);
                     if(!in)throw std::runtime_error("Truncated script component");
-                    in.seekg(position);if(next=="EndComponent")return;
+                    in.seekg(position);if(next!=key)return;
                 }
                 if(std::string_view(key)=="Cast shadows"){
                     auto position=in.tellg();std::string next;in>>std::quoted(next);
@@ -189,6 +199,7 @@ public:
             for(auto* source:sources){auto& copy=scene.CreateGameObject(source->name+(source==original?" Copy":""));copies[source->GetID()]=&copy;copy.transform=source->transform;copy.activeSelf=source->activeSelf;copy.isGroup=source->isGroup;
                 for(auto& t:registry.types)if(auto* c=t.get(*source)){std::ostringstream out;out<<std::setprecision(9);t.fields(*c,[&](const char*,Property p){ RICE_BENCHMARK_FUNCTION(); WriteProperty(out,p);out<<'\n';});std::istringstream in(out.str());auto& target=t.add(copy);t.fields(target,[&](const char*,Property p){ RICE_BENCHMARK_FUNCTION(); ReadProperty(in,p);});}}
             auto mapped=[&](GameObject* obj){ RICE_BENCHMARK_FUNCTION(); return obj&&copies.contains(obj->GetID())?copies.at(obj->GetID()):obj;};
+            for(auto& [source,copy]:copies)RemapScriptBindings(*copy,[&](EntityID id){return copies.contains(id)?copies.at(id)->GetID():EntityID{};});
             for(auto& [source,copy]:copies){(void)source;if(auto* a=copy->GetComponent<Anchor>())a->child=copies.contains(a->child)?copies.at(a->child)->GetID():0;}
             for(auto& [source,copy]:copies)if(auto* f=copy->GetComponent<CameraFollower>();f&&copies.contains(f->camera))f->camera=copies.at(f->camera)->GetID();
             for(auto* source:sources)copies.at(source->GetID())->SetParent(mapped(source->GetParent()));
@@ -438,7 +449,11 @@ private:
 public:
     Scope<Scene> scene=CreateScope<Scene>();bool playing=false,paused=false;EntityID selected=0;
     explicit EditorSession(ComponentRegistry& r):registry(r){ RICE_BENCHMARK_FUNCTION(); }
-    std::string Snapshot(){ RICE_BENCHMARK_FUNCTION(); return SceneCodec(registry).Encode(*scene);}
+    std::string Snapshot() const { RICE_BENCHMARK_FUNCTION(); return SceneCodec(registry).Encode(*scene);}
+    std::string DocumentSnapshot() const {
+        RICE_BENCHMARK_FUNCTION();
+        return playing ? editSnapshot : Snapshot();
+    }
     // Call only when an edit is activated, before applying the first changed
     // value. Structural commands use CaptureAll/Edit to include side effects.
     EditSnapshot CaptureAll(){RICE_BENCHMARK_FUNCTION();return CaptureScene(*scene);}
@@ -512,6 +527,29 @@ public:
         auto after=SceneCodec(registry).Encode(*scene);if(before==after)return;
         HistoryEntry entry;entry.beforeText=before;entry.afterText=std::move(after);
         undo.push_back(std::move(entry));if(undo.size()>100)undo.erase(undo.begin());redo.clear();++historyGeneration;
+    }
+    void EditScriptAttachment(EntityID id,const std::string& typeName,
+                              const std::function<void(ScriptComponentBase&)>& edit = {}) {
+        auto snapshot = playing ? SceneCodec(registry).Decode(editSnapshot) : nullptr;
+        auto& document = snapshot ? *snapshot : *scene;
+        auto* object = document.Find(id);
+        auto* type = registry.Find(typeName);
+        auto* script = object && type ? dynamic_cast<ScriptComponentBase*>(type->get(*object)) : nullptr;
+        if (!script) throw std::runtime_error("The script component does not exist in the edited scene.");
+        if (!edit) return;
+        if (!playing) {
+            auto before = CaptureObject(id);
+            edit(*script);
+            Record(before);
+            return;
+        }
+        EditSnapshot before, after;
+        before.objects[id] = CaptureState(*object);
+        edit(*script);
+        after.objects[id] = CaptureState(*object);
+        auto updated = SceneCodec(registry).Encode(document);
+        Commit(before,after);
+        editSnapshot.swap(updated);
     }
     template<class F>void Edit(F fn){RICE_BENCHMARK_FUNCTION();if(playing){fn(*scene);scene->Flush();return;}auto before=CaptureAll();fn(*scene);scene->Flush();Record(before);}
     void Undo(){RICE_BENCHMARK_FUNCTION();if(playing||undo.empty())return;Apply(undo.back(),false);redo.push_back(std::move(undo.back()));undo.pop_back();}

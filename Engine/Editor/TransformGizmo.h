@@ -27,6 +27,7 @@ public:
 
     bool Active()const{ RICE_BENCHMARK_FUNCTION(); return mode!=Mode::None;}
     void Cancel(EditorSession& editor){ RICE_BENCHMARK_FUNCTION(); if(Active())Finish(editor,true);}
+    void Commit(EditorSession& editor){if(Active())Finish(editor,false);}
     void Draw(EditorSession& editor,ImVec2 origin,ImVec2 extent,const Matrix4& vp,EntityID target=0,bool canvasHovered=false){
         RICE_BENCHMARK_FUNCTION();
         Vector2 mouse(ImGui::GetIO().MousePos.x,ImGui::GetIO().MousePos.y),viewOrigin(origin.x,origin.y),size(extent.x,extent.y);

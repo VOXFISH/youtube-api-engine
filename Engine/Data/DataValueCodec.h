@@ -55,6 +55,9 @@ template<class T> concept Encodable = requires(const T& value, CodecDetail::Writ
     { DataCodec<T>::Write(writer, value) } -> std::same_as<void>;
     { DataCodec<T>::Read(reader) } -> std::same_as<T>;
 };
+// Native modules may already have encoded their value using its registered
+// type and version. Preserve that schema when routing through the engine.
+template<class T> concept Routable = Encodable<T> || std::same_as<T,EncodedValue>;
 template<class T> struct DataCodec<T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>>> {
     static constexpr uint32_t Version = 1;
     static std::string Type() { return std::string(std::is_signed_v<T> ? "i" : "u") + std::to_string(sizeof(T) * 8); }
@@ -214,4 +217,12 @@ template<Encodable T> T DecodeValue(const EncodedValue& encoded) {
     if (reader.position != reader.bytes.size()) throw DataError(ErrorCode::InvalidValue, "Trailing encoded data");
     return result;
 }
+inline EncodedValue EncodeValue(const EncodedValue& value) {
+    if (value.type.empty() || value.type.size() > 1024 || !value.codecVersion ||
+        value.bytes.size() > CodecDetail::MaximumBytes)
+        throw DataError(ErrorCode::InvalidValue, "Invalid pre-encoded data value");
+    return value;
+}
+template<class T> requires std::same_as<T,EncodedValue>
+T DecodeValue(const EncodedValue& value) { return EncodeValue(value); }
 } // namespace Rice::Data

@@ -20,6 +20,7 @@ struct ListenerBindingConfig {
     std::size_t order = 0;
     std::string permission = "LocalAdmin";
     std::vector<std::string> allowedChannelIds;
+    bool operator==(const ListenerBindingConfig&) const = default;
 };
 struct RoutedYouTubeCommand {
     std::string text;

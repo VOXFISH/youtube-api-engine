@@ -109,7 +109,7 @@ namespace Rice
     {
         RICE_BENCHMARK_FUNCTION();
         (void)e;
-        m_Running = false;
+        OnCloseRequested();
         return true;
     }
 }

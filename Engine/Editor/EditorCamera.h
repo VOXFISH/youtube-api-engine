@@ -1,6 +1,8 @@
 #pragma once
 #include "Rice/Benchmark.h"
 #include "Renderer/PerspectiveCamera.h"
+#include "Scene/Scene.h"
+#include "Scene/SpatialBVH.h"
 #include <algorithm>
 #include <cmath>
 namespace Rice {
@@ -43,6 +45,7 @@ public:
 // Editor-only navigation state; never attached to a gameplay entity.
 class EditorCamera {
     PerspectiveCamera camera{45,16.f/9,.1f,1000};
+    float nearClip=.1f,farClip=1000;
 public:
     Vector3 position{0,4,10};float yaw=-90,pitch=-21.801409f;
     Vector3 Forward()const{ RICE_BENCHMARK_FUNCTION(); float y=glm::radians(yaw),p=glm::radians(pitch);return glm::normalize(Vector3(std::cos(p)*std::cos(y),std::sin(p),std::cos(p)*std::sin(y)));}
@@ -61,6 +64,33 @@ public:
         yaw=std::remainder(yaw+yawDelta,360.f);pitch=nextPitch;
     }
     void Pan(Vector2 pixels,float height){ RICE_BENCHMARK_FUNCTION(); float units=2.f*10.f*std::tan(glm::radians(45.f)*.5f)/std::max(1.f,height);position+=(-Right()*pixels.x+Up()*pixels.y)*units;}
-    PerspectiveCamera& Get(float width,float height){ RICE_BENCHMARK_FUNCTION(); camera.SetPerspective(45,width/std::max(1.f,height),.1f,1000);camera.SetPosition(position);camera.LookAtObj(position+Forward());return camera;}
+    void FrameHierarchy(Scene& scene,EntityID rootId){
+        RICE_BENCHMARK_FUNCTION();
+        auto* root=scene.Find(rootId);
+        if(!root)return;
+        std::optional<SpatialBounds> bounds;
+        for(const auto& object:scene.GetObjects()){
+            if(!object->IsActive()||!object->DependsOn(root))continue;
+            object->EachComponent([&](Component& component){
+                if(!component.enabled)return;
+                auto local=component.GeometryBounds();
+                if(!local)return;
+                auto world=SpatialBounds::Transform(object->GetWorldMatrix(),{local->first,local->second});
+                if(!bounds){bounds=world;return;}
+                bounds->low=glm::min(bounds->low,world.low);
+                bounds->high=glm::max(bounds->high,world.high);
+            });
+        }
+        if(!bounds)return;
+        const auto& projection=camera.GetProjectionMatrix();
+        const float halfAngle=std::atan(1.f/std::max(projection[0][0],projection[1][1]));
+        const float radius=std::max(glm::length(bounds->high-bounds->low)*.5f,1.e-5f);
+        const float distance=1.1f*radius/std::sin(halfAngle);
+        if(!std::isfinite(distance))return;
+        position=(bounds->low+bounds->high)*.5f-Forward()*distance;
+        nearClip=std::min(.1f,distance*.1f);
+        farClip=std::max(1000.f,distance+radius*2);
+    }
+    PerspectiveCamera& Get(float width,float height){ RICE_BENCHMARK_FUNCTION(); camera.SetPerspective(45,width/std::max(1.f,height),nearClip,farClip);camera.SetPosition(position);camera.LookAtObj(position+Forward());return camera;}
 };
 }

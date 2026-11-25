@@ -25,6 +25,7 @@ private:
     fs::path filePath,defaultDirectory;
     std::string savedData;
     std::string appliedMaterials;
+    std::pair<EntityID,EntityID> appliedShapeLinks{};
     ShapeDocument startDocument;
     EntityID startChild=0;
     std::string fileError;
@@ -62,6 +63,11 @@ private:
         return editor.scene->Find(target);
     }
     ShapeDocument CaptureDraft()const{return ShapeDocument::Capture(*draft.scene->Find(target));}
+    std::pair<EntityID,EntityID> DraftLinks()const{
+        auto* object=draft.scene->Find(target);
+        auto* anchor=object->GetComponent<Anchor>();auto* follower=object->GetComponent<CameraFollower>();
+        return {anchor?anchor->child:0,follower?follower->camera:0};
+    }
     std::string MaterialsData()const{std::ostringstream out;out<<std::setprecision(9);draft.scene->Find(target)->GetComponent<MeshRenderer>()->triangleMaterials.Write(out);return out.str();}
     Vector3 Pivot()const{return draft.scene->Find(target)->GetLocalPivot();}
     void Frame(const ShapeMesh& mesh){
@@ -425,6 +431,9 @@ public:
     bool IsDirty(EditorSession&)const{
         return open&&(filePath.empty()||ShapeFile::Encode(CaptureDraft())!=savedData||MaterialsData()!=appliedMaterials);
     }
+    bool HasUnsavedChanges()const{
+        return open&&(ShapeFile::Encode(CaptureDraft())!=savedData||MaterialsData()!=appliedMaterials||DraftLinks()!=appliedShapeLinks);
+    }
     void SaveFile(EditorSession& editor,const fs::path& path){
         RICE_BENCHMARK_FUNCTION();
         if(!Source(editor))throw std::runtime_error("No editable Custom shape is open");
@@ -460,7 +469,7 @@ public:
         }
         source->GetComponent<MeshRenderer>()->shapeAsset=PathLabel(fs::relative(destination,defaultDirectory));
         ++editor.previewRevision;editor.Record(before);
-        filePath=destination;savedData=ShapeFile::Encode(data);appliedMaterials=MaterialsData();fileError.clear();return destination;
+        filePath=destination;savedData=ShapeFile::Encode(data);appliedMaterials=MaterialsData();appliedShapeLinks=DraftLinks();fileError.clear();return destination;
     }
     void LoadFile(EditorSession& editor,const fs::path& path){
         RICE_BENCHMARK_FUNCTION();
@@ -490,6 +499,7 @@ public:
         if(auto* anchor=source->GetComponent<Anchor>())object.GetComponent<Anchor>()->child=anchor->child;
         draft.Replace(std::move(next));selection.Reset(preview.custom);Frame(preview.custom);spatialRevision=0;sceneInstance=draft.scene->GetInstanceID();historyRevision=draft.historyRevision;open=focusNext=true;cameraMode=false;
         vertexListOpen=generalOpen=followerSelected=trianglePanelOpen=false;hoveredTriangle=-1;filePath.clear();fileError.clear();savedData=ShapeFile::Encode(data);appliedMaterials=MaterialsData();
+        appliedShapeLinks=DraftLinks();
         defaultDirectory=directory.empty()?fs::current_path():directory;
         if(!mesh->shapeAsset.empty())filePath=fs::absolute(defaultDirectory/fs::path(std::u8string(mesh->shapeAsset.begin(),mesh->shapeAsset.end())));
     }

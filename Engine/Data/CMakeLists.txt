@@ -1,5 +1,5 @@
 add_library(RiceData STATIC SqliteStore.cpp)
-target_include_directories(RiceData PUBLIC ${PROJECT_SOURCE_DIR})
+target_include_directories(RiceData PUBLIC ${PROJECT_SOURCE_DIR}/..)
 target_link_libraries(RiceData PUBLIC RiceBuildOptions glm::glm)
 
 if(BUILD_TESTING)

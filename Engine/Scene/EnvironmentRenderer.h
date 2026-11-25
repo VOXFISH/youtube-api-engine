@@ -42,7 +42,7 @@ float groundVisibility(vec3 position){
             attenuation=falloff*falloff;
         }
         float weight=dot(max(groundLightColor[i],vec3(0)),vec3(.2126,.7152,.0722))*max(light.y,0.)*attenuation;
-        total+=weight;visible+=weight*shadowVisibility(i,position,vec3(0,1,0));
+        total+=weight;visible+=weight*shadowVisibility(i,position,vec3(0,1,0),uvec2(0));
     }
     return visible/total;
 }
@@ -98,7 +98,6 @@ void main(){
         bool depthTest=glIsEnabled(GL_DEPTH_TEST),cull=glIsEnabled(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glDepthMask(GL_TRUE);glDisable(GL_CULL_FACE);
         shader->Bind();shader->SetUniformMat4("inverseVP",glm::inverse(camera.GetVPMatrix()));shader->SetUniformMat4("viewProjection",camera.GetVPMatrix());
-        shader->SetUniformInt("shadowMap",3);
         if(shadows){
             shadows->Bind(shader);
             const auto& lights=shadows->Lights();
@@ -111,7 +110,10 @@ void main(){
                 shader->SetUniformFloat3("groundLightDirection"+suffix,lights[i].direction);
                 shader->SetUniformFloat4("groundLightPositionRange"+suffix,Vector4(lights[i].position,lights[i].range));
             }
-        }else{shader->SetUniformInt("shadowLightCount",0);shader->SetUniformInt("groundLightCount",0);}
+        }else{
+            ShadowMaps::SetSamplerUnits(shader);
+            shader->SetUniformInt("shadowLightCount",0);shader->SetUniformInt("groundLightCount",0);
+        }
         shader->SetUniformInt("skyEnabled",sky);shader->SetUniformInt("groundEnabled",s.ground);shader->SetUniformInt("skyImage",0);
         shader->SetUniformFloat3("axes",guides?s.axes:Vector3(0));shader->SetUniformFloat3("grids",guides?s.grids:Vector3(0));
         if(sky){scene.skyboxTexture->Bind(0);shader->SetUniformInt("skyLayout",int(DetectCubemapLayout(scene.skyboxTexture->GetWidth(),scene.skyboxTexture->GetHeight())));}

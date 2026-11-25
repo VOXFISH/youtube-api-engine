@@ -173,6 +173,7 @@ public:
             object.previousGroup=node.previousGroup&&indices.contains(node.previousGroup)?objects[indices.at(node.previousGroup)]:0;
             object.groupOffset=node.offset;object.groupParentBind=node.bind;object.groupCommonBind=node.common;
             ComponentSnapshot::Restore(object,node.components,registry);
+            RemapScriptBindings(object,[&](EntityID id){return indices.contains(id)?objects[indices.at(id)]:EntityID{};});
             if(auto* anchor=object.GetComponent<Anchor>())anchor->child=indices.contains(anchor->child)?objects[indices.at(anchor->child)]:0;
             if(auto* f=object.GetComponent<CameraFollower>())f->camera=indices.contains(f->camera)?objects[indices.at(f->camera)]:0;
         }
@@ -202,7 +203,7 @@ public:
 
 class PrefabLibrary {
     ComponentRegistry& registry;
-    fs::path directory;
+    fs::path directory, legacyDirectory;
     std::map<std::string,std::shared_ptr<const PrefabAsset>> assets;
 
     fs::path Path(const std::string& name) const {
@@ -216,16 +217,18 @@ class PrefabLibrary {
     }
 public:
     explicit PrefabLibrary(ComponentRegistry& registry):registry(registry){RICE_BENCHMARK_FUNCTION();}
-    void SetDirectory(fs::path value) { RICE_BENCHMARK_FUNCTION(); directory=std::move(value);Clear(); }
+    void SetDirectory(fs::path value,fs::path legacy={}) { RICE_BENCHMARK_FUNCTION(); directory=std::move(value);legacyDirectory=std::move(legacy);Clear(); }
     void Clear() { RICE_BENCHMARK_FUNCTION(); assets.clear(); }
     std::vector<std::string> Names() const {
         RICE_BENCHMARK_FUNCTION();
         std::vector<std::string> names;
-        if(directory.empty()||!fs::exists(directory))return names;
-        for(const auto& entry:fs::directory_iterator(directory))if(entry.is_regular_file()&&entry.path().extension()==".prefab"){
-            auto name=entry.path().stem().u8string();names.emplace_back(name.begin(),name.end());
+        for(const auto& folder:{directory,legacyDirectory}){
+            if(folder.empty()||!fs::is_directory(folder))continue;
+            for(const auto& entry:fs::directory_iterator(folder))if(entry.is_regular_file()&&entry.path().extension()==".prefab"){
+                auto name=entry.path().stem().u8string();names.emplace_back(name.begin(),name.end());
+            }
         }
-        std::sort(names.begin(),names.end());return names;
+        std::sort(names.begin(),names.end());names.erase(std::unique(names.begin(),names.end()),names.end());return names;
     }
     fs::path Save(Scene& scene,EntityID root,const std::string& name) {
         RICE_BENCHMARK_FUNCTION();
@@ -238,6 +241,7 @@ public:
         RICE_BENCHMARK_FUNCTION();
         auto path=Path(name);auto found=assets.find(name);
         if(found!=assets.end())return found->second;
+        if(!fs::is_regular_file(path)&&!legacyDirectory.empty())path=legacyDirectory/path.filename();
         auto asset=PrefabAsset::Decode(ReadFile(path),registry);assets.emplace(name,asset);return asset;
     }
     GameObject& Instantiate(Scene& scene,const std::string& name,Vector3 position=Vector3(0)) {
