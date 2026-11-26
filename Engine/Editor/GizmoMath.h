@@ -67,23 +67,47 @@ inline std::optional<Vector3> Project(Vector3 world,Vector2 origin,Vector2 size,
     auto p=vp*Vector4(world,1);if(p.w<=0.f)return {};p/=p.w;if(p.z < -1 || p.z > 1)return {};
     return Vector3(origin.x+(p.x+1)*.5f*size.x,origin.y+(1-p.y)*.5f*size.y,p.z);
 }
+inline bool HasColliderGeometry(GameObject& obj){
+    if(auto* box=obj.GetComponent<BoxCollider>();box&&box->enabled)return true;
+    if(auto* sphere=obj.GetComponent<SphereCollider>();sphere&&sphere->enabled)return true;
+    auto* polygon=obj.GetComponent<PolygonCollider>();
+    auto* mesh=obj.GetComponent<MeshRenderer>();
+    return polygon&&polygon->enabled&&mesh&&mesh->HasGeometry();
+}
 inline std::pair<Vector3,Vector3> PrimitiveBounds(GameObject& obj){
     RICE_BENCHMARK_FUNCTION();
-    if(auto* mesh=obj.GetComponent<MeshRenderer>()) {
-        if(mesh->shape==int(BasicShape::Custom))return mesh->custom.Bounds();
-        if(mesh->shape==int(BasicShape::Circle)||mesh->shape==int(BasicShape::Rectangle))
-            return {{-.5f,-.5f,-.025f},{.5f,.5f,.025f}};
-        return {Vector3(-.5f),Vector3(.5f)};
+    if(auto* mesh=obj.GetComponent<MeshRenderer>();mesh&&mesh->HasGeometry()){
+        auto bounds=*mesh->GeometryBounds();
+        if(mesh->shape==int(BasicShape::Circle)||mesh->shape==int(BasicShape::Rectangle)){
+            bounds.first.z=-.025f;bounds.second.z=.025f;
+        }
+        if(!mesh->enabled)if(auto* polygon=obj.GetComponent<PolygonCollider>();polygon&&polygon->enabled){
+            bounds.first+=polygon->center;bounds.second+=polygon->center;
+        }
+        return bounds;
     }
     if(obj.GetComponent<SpriteRenderer>())return {{-.5f,-.5f,-.025f},{.5f,.5f,.025f}};
     if(auto* c=obj.GetComponent<BoxCollider>())return {c->center-glm::max(glm::abs(c->size),Vector3(.05f))*.5f,c->center+glm::max(glm::abs(c->size),Vector3(.05f))*.5f};
+    if(auto* sphere=obj.GetComponent<SphereCollider>()){
+        Vector3 extent(std::max(sphere->radius,0.f));
+        const glm::mat3 basis(obj.GetWorldMatrix());
+        if(std::abs(glm::determinant(basis))>1e-8f){
+            // A sphere keeps one world radius even when its parent scales axes differently.
+            const auto [low,high]=sphere->GetBounds();
+            const float radius=(high.x-low.x)*.5f;
+            const auto inverseTranspose=glm::transpose(glm::inverse(basis));
+            for(int i=0;i<3;++i)extent[i]=radius*glm::length(inverseTranspose[i]);
+        }
+        return {sphere->center-extent,sphere->center+extent};
+    }
+    if(auto* polygon=obj.GetComponent<PolygonCollider>())return {polygon->center,polygon->center};
     return {Vector3(-.5f),Vector3(.5f)};
 }
 inline std::pair<Vector3,Vector3> SpaceBounds(GameObject& obj,const Matrix4& space){
     RICE_BENCHMARK_FUNCTION();
     Vector3 low(1e30f),high(-1e30f);bool any=false;
     if(obj.isGroup)for(auto& child:obj.GetScene().GetObjects())if(!child->IsPendingDestroy()&&child->GetHierarchyParent()==&obj){auto [a,b]=SpaceBounds(*child,space);low=glm::min(low,a);high=glm::max(high,b);any=true;}
-    if(!any||obj.GetComponent<MeshRenderer>()||obj.GetComponent<SpriteRenderer>()||obj.GetComponent<BoxCollider>()){
+    if(!any||obj.GetComponent<MeshRenderer>()||obj.GetComponent<SpriteRenderer>()||obj.GetComponent<BoxCollider>()||obj.GetComponent<SphereCollider>()){
         auto [a,b]=PrimitiveBounds(obj);auto matrix=space*obj.GetWorldMatrix();
         for(int i=0;i<8;++i){Vector3 corner;for(int k=0;k<3;++k)corner[k]=(i&(1<<k))?b[k]:a[k];auto point=Vector3(matrix*Vector4(corner,1));low=glm::min(low,point);high=glm::max(high,point);}
     }
@@ -103,13 +127,20 @@ inline std::optional<float> Hit(const Ray& ray,const Matrix4& world,Vector3 low,
     return enter;
 }
 inline EntityID Pick(Scene& scene,const Ray& ray,bool selectGroups=true,bool renderedOnly=false){ RICE_BENCHMARK_FUNCTION(); EntityID selected=0;float closest=1e30f;for(auto& obj:scene.GetObjects())if(obj->IsActive()){
-    auto* mesh=obj->GetComponent<MeshRenderer>();auto* sprite=obj->GetComponent<SpriteRenderer>();auto* collider=obj->GetComponent<BoxCollider>();
+    auto* mesh=obj->GetComponent<MeshRenderer>();auto* sprite=obj->GetComponent<SpriteRenderer>();
     const bool group=obj->isGroup&&!obj->GetComponent<SceneLayer>();
-    if(renderedOnly&&!(mesh&&mesh->enabled)&&!(sprite&&sprite->enabled))continue;
-    if(!(selectGroups&&group)&&!(mesh&&mesh->enabled)&&!(sprite&&sprite->enabled)&&!(collider&&collider->enabled))continue;
+    const bool rendered=(mesh&&mesh->enabled&&mesh->HasGeometry())||(sprite&&sprite->enabled);
+    if(renderedOnly&&!rendered)continue;
+    if(!(selectGroups&&group)&&!rendered&&!HasColliderGeometry(*obj))continue;
     auto [low,high]=group&&!renderedOnly?Bounds(*obj):PrimitiveBounds(*obj);auto hit=Hit(ray,obj->GetWorldMatrix(),low,high);
-    if(hit&&mesh&&mesh->enabled&&mesh->shape==int(BasicShape::Custom)&&!mesh->custom.Empty()&&!group){
-        auto inverse=glm::inverse(obj->GetWorldMatrix());hit=mesh->Intersection().Hit(Vector3(inverse*Vector4(ray.origin,1)),Vector3(inverse*Vector4(ray.direction,0)));
+    if(hit&&mesh&&mesh->shape==int(BasicShape::Custom)&&!mesh->custom.Empty()&&!group){
+        auto* polygon=obj->GetComponent<PolygonCollider>();
+        if(mesh->enabled||(polygon&&polygon->enabled)){
+            auto inverse=glm::inverse(obj->GetWorldMatrix());
+            Vector3 localOrigin=Vector3(inverse*Vector4(ray.origin,1));
+            if(!mesh->enabled)localOrigin-=polygon->center;
+            hit=mesh->Intersection().Hit(localOrigin,Vector3(inverse*Vector4(ray.direction,0)));
+        }
     }
     if(hit&&*hit<closest){closest=*hit;selected=obj->GetID();}}
     if(selectGroups)if(auto* obj=scene.Find(selected))for(auto* p=obj->GetHierarchyParent();p;p=p->GetHierarchyParent())if(p->isGroup&&!p->GetComponent<SceneLayer>())selected=p->GetID();

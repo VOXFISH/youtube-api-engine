@@ -3,7 +3,7 @@
 namespace Rice {
 inline const char* ReflectionIntersectionGLSL = R"(
 uniform samplerBuffer reflectionGeometry;
-uniform int reflectionGeometryCount;
+uniform int reflectionGroupCount;
 uniform int reflectionReceiverIndex;
 uniform int reflectionProbeIndex;
 uniform vec3 reflectionCapturePosition;
@@ -116,29 +116,75 @@ float reflectionRoundSolidHit(vec3 origin, vec3 direction, bool conical) {
     return nearest;
 }
 
+bool reflectionIntersectsBounds(vec3 origin, vec3 direction, vec3 low, vec3 high, float nearest) {
+    float entry = 0.0, exit = nearest;
+    for (int axis = 0; axis < 3; ++axis) {
+        if (direction[axis] == 0.0) {
+            if (origin[axis] < low[axis] || origin[axis] > high[axis]) return false;
+        } else {
+            float a = (low[axis] - origin[axis]) / direction[axis];
+            float b = (high[axis] - origin[axis]) / direction[axis];
+            entry = max(entry, min(a, b));
+            exit = min(exit, max(a, b));
+            if (entry > exit) return false;
+        }
+    }
+    return true;
+}
+
+void reflectionTestTriangle(int base, vec3 origin, vec3 direction, inout float nearest) {
+    vec3 a = texelFetch(reflectionGeometry, base).xyz;
+    vec3 e1 = texelFetch(reflectionGeometry, base + 1).xyz - a;
+    vec3 e2 = texelFetch(reflectionGeometry, base + 2).xyz - a;
+    vec3 p = cross(direction, e2);
+    float determinant = dot(e1, p);
+    if (abs(determinant) < 0.00000001) return;
+    vec3 offset = origin - a;
+    float u = dot(offset, p) / determinant;
+    vec3 q = cross(offset, e1);
+    float v = dot(direction, q) / determinant;
+    float distance = dot(e2, q) / determinant;
+    if (u >= 0.0 && v >= 0.0 && u + v <= 1.0 && distance > reflectionMinDistance)
+        nearest = min(nearest, distance);
+}
+
+void reflectionTraceMesh(int cursor, int end, vec3 origin, vec3 direction, inout float nearest) {
+    while (cursor < end) {
+        vec4 low = texelFetch(reflectionGeometry, cursor);
+        vec4 high = texelFetch(reflectionGeometry, cursor + 1);
+        if (!reflectionIntersectsBounds(origin, direction, low.xyz, high.xyz, nearest)) {
+            cursor += int(low.w);
+            continue;
+        }
+        // Branch children immediately follow their parent. Leaves contain triangle vertices.
+        cursor += 2;
+        int leafEnd = cursor + 3 * int(high.w);
+        for (; cursor < leafEnd; cursor += 3) reflectionTestTriangle(cursor, origin, direction, nearest);
+    }
+}
+
 vec3 correctedReflectionDirection(vec3 origin, vec3 direction) {
     float lengthSquared = dot(direction, direction);
     if (lengthSquared < 0.00000001) return vec3(0.0, 0.0, 1.0);
     direction *= inversesqrt(lengthSquared);
     float nearest = reflectionMaxDistance;
-    for (int primitive = 0; primitive < reflectionGeometryCount; ++primitive) {
-        int base = primitive * 5;
-        vec4 metadata = texelFetch(reflectionGeometry, base + 4);
-        if (int(metadata.y) == reflectionReceiverIndex || int(metadata.y) == reflectionProbeIndex) continue;
-        if (int(metadata.x) == 6) {
-            vec3 a = texelFetch(reflectionGeometry, base).xyz;
-            vec3 e1 = texelFetch(reflectionGeometry, base + 1).xyz - a;
-            vec3 e2 = texelFetch(reflectionGeometry, base + 2).xyz - a;
-            vec3 p = cross(direction, e2);
-            float determinant = dot(e1, p);
-            if (abs(determinant) < 0.00000001) continue;
-            vec3 offset = origin - a;
-            float u = dot(offset, p) / determinant;
-            vec3 q = cross(offset, e1);
-            float v = dot(direction, q) / determinant;
-            float distance = dot(e2, q) / determinant;
-            if (u >= 0.0 && v >= 0.0 && u + v <= 1.0 && distance > 0.0001)
-                nearest = min(nearest, distance);
+    int nextPayload = reflectionGroupCount * 3;
+    for (int group = 0; group < reflectionGroupCount; ++group) {
+        int header = group * 3;
+        vec3 metadata = texelFetch(reflectionGeometry, header).xyz;
+        int base = nextPayload;
+        nextPayload += int(metadata.z);
+        if (int(metadata.x) == reflectionReceiverIndex || int(metadata.x) == reflectionProbeIndex) continue;
+        vec3 low = texelFetch(reflectionGeometry, header + 1).xyz;
+        vec3 high = texelFetch(reflectionGeometry, header + 2).xyz;
+        if (!reflectionIntersectsBounds(origin, direction, low, high, nearest)) continue;
+        int shape = int(metadata.y);
+        if (shape == 6) {
+            for (int i = base; i < nextPayload; i += 3) reflectionTestTriangle(i, origin, direction, nearest);
+            continue;
+        }
+        if (shape == 7) {
+            reflectionTraceMesh(base, nextPayload, origin, direction, nearest);
             continue;
         }
         mat4 inverseWorld = mat4(texelFetch(reflectionGeometry, base),
@@ -147,7 +193,6 @@ vec3 correctedReflectionDirection(vec3 origin, vec3 direction) {
                                  texelFetch(reflectionGeometry, base + 3));
         vec3 localOrigin = (inverseWorld * vec4(origin, 1.0)).xyz;
         vec3 localDirection = (inverseWorld * vec4(direction, 0.0)).xyz;
-        int shape = int(metadata.x);
         float distance = reflectionMaxDistance;
         if (shape == 0) distance = reflectionBoxHit(localOrigin, localDirection);
         else if (shape == 1 || shape == 2) distance = reflectionPlaneHit(localOrigin, localDirection, shape == 1);

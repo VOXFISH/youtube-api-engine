@@ -26,8 +26,8 @@ public:
     }
     static bool Geometry(GameObject& obj){
         RICE_BENCHMARK_FUNCTION();
-        auto* mesh=obj.GetComponent<MeshRenderer>();auto* sprite=obj.GetComponent<SpriteRenderer>();auto* collider=obj.GetComponent<BoxCollider>();
-        return (mesh&&mesh->enabled)||(sprite&&sprite->enabled)||(collider&&collider->enabled);
+        auto* mesh=obj.GetComponent<MeshRenderer>();auto* sprite=obj.GetComponent<SpriteRenderer>();
+        return (mesh&&mesh->enabled&&mesh->HasGeometry())||(sprite&&sprite->enabled)||HasColliderGeometry(obj);
     }
     static bool Overlap(const Contact& contact,Vector3 translation){
         RICE_BENCHMARK_FUNCTION();

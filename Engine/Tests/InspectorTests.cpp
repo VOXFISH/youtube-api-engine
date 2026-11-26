@@ -20,6 +20,9 @@ struct SceneInspectorTestAccess {
     static void Property(SceneInspector& inspector,Workspace& workspace,GameObject& object,const char* label,Rice::Property property){
         inspector.DrawObjectProperty(workspace,object,label,property);
     }
+    static void PhysicsField(const char* label,Rice::Property property){
+        SceneInspector::DrawPhysicsProperty(label,property,{});
+    }
     static void EndFrame(SceneInspector& inspector,Workspace& workspace){inspector.EndFrameEdits(workspace);}
     static void Settings(SceneInspector& inspector,Workspace& workspace){inspector.DrawSceneSettings(workspace);}
     static void QueueMaterial(SceneInspector& inspector,Workspace& workspace,GameObject& object){
@@ -141,6 +144,51 @@ struct Fixture {
         throw std::runtime_error(std::string("Menu item missing: ")+label);
     }
 };
+
+void TestPhysicsTooltips(const fs::path& root){
+    Fixture test(root/NewAssetID());
+    auto* type=test.workspace.registry.Find("Physics");
+    Check(type,"Physics must appear in the component registry");
+    auto& body=type->add(test.Object());
+    std::map<std::string,ImRect> rows;
+    ImGui::GetStyle().HoverFlagsForTooltipMouse=ImGuiHoveredFlags_None;
+    auto frame=[&](ImVec2 mouse,bool disabled=false,bool down=false){
+        ImGui::GetIO().AddMousePosEvent(mouse.x,mouse.y);
+        ImGui::GetIO().AddMouseButtonEvent(0,down);
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize({400,400});
+        ImGui::Begin("Physics inspector test");
+        ImGui::BeginDisabled(disabled);
+        type->fields(body,[&](const char* name,Property property){
+            SceneInspectorTestAccess::PhysicsField(name,property);
+            rows[name]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};
+        });
+        ImGui::EndDisabled();ImGui::End();ImGui::Render();
+        for(auto* window:ImGui::GetCurrentContext()->Windows)
+            if(window->Active && (window->Flags&ImGuiWindowFlags_Tooltip))return true;
+        return false;
+    };
+    Check(!frame({-1,-1}),"A tooltip requires a hovered Physics field");
+    for(const auto& [name,row]:rows){
+        if(!frame({row.Min.x+3,row.GetCenter().y}) || !frame({row.Max.x-3,row.GetCenter().y},true))
+            throw std::runtime_error("Missing Physics tooltip over the value or the disabled label: "+name);
+    }
+    auto click=[&](ImVec2 point){frame(point);frame(point,false,true);frame(point);};
+    auto selectBodyType=[&](int index){
+        const auto& row=rows.at("Kinematic");
+        click({row.Min.x+10,row.GetCenter().y});
+        frame({-1,-1});
+        auto& popups=ImGui::GetCurrentContext()->OpenPopupStack;
+        Check(!popups.empty()&&popups.back().Window,"Body type selector opens");
+        auto* popup=popups.back().Window;
+        const auto start=popup->DC.CursorStartPos;
+        click({start.x+10,start.y+index*ImGui::GetTextLineHeightWithSpacing()+ImGui::GetTextLineHeight()*.5f});
+    };
+    auto& physics=static_cast<Rigidbody&>(body);
+    Check(!physics.kinematic,"New Physics body starts Dynamic");
+    selectBodyType(1);Check(physics.kinematic,"Select Kinematic in the Inspector");
+    selectBodyType(0);Check(!physics.kinematic,"Switch back to Dynamic in the Inspector");
+}
 
 void TestEditEvents(const fs::path& root){
     Fixture test(root/NewAssetID());test.properties=true;test.Draw();test.Draw();
@@ -413,6 +461,7 @@ void TestChessSettingsMenu(const fs::path& output){
 int main(int argc,char** argv){try{
     Check(argc==2,"Test directory required");
     TestSceneCameraOrbit();
+    TestPhysicsTooltips(fs::path(argv[1]));
     TestEmptyEditor(fs::path(argv[1]));TestProjectClose(fs::path(argv[1]));
     TestChessSettingsMenu(fs::path(argv[1]));
     TestNewProjectLayers(fs::path(argv[1]));

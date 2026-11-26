@@ -123,12 +123,68 @@ struct CppTokens {
     }
     std::size_t Next(std::size_t p) const {auto x=items[p].mate;return x!=missing&&x>p?x+1:p+1;}
     std::vector<std::string> Args(std::size_t a, std::size_t b) const {
-        std::vector<std::string> out;
-        for(auto p=a;p<b;p=Next(p)) if(V(p)==","){out.push_back(Slice(a,p));a=p+1;}
-        if(a<b)out.push_back(Slice(a,b));
-        return out;
+        if(a>=b)return {};
+        return SplitArguments(source.substr(items[a].from,items[b-1].to-items[a].from));
     }
 };
+
+bool Keyword(std::string_view name);
+
+// Unlike parentheses, angle brackets can also be comparison operators. A
+// template-id in an expression must end before a call, qualifier or delimiter.
+std::size_t TemplateEnd(const CppTokens& t,std::size_t open,bool declaration) {
+    if(!open||!Identifier(t.V(open-1))||t.V(open+1)=="<")return open;
+    int depth=1;
+    for(auto i=open+1;i<t.items.size();i=t.Next(i)){
+        if(t.V(i)=="<")++depth;
+        else if(t.V(i)==">"&&!--depth){
+            const auto next=t.V(i+1);
+            if(declaration||next.empty()||next=="("||next=="{"||next=="::"||next==","||
+               next==">"||next==")"||next=="]"||next=="}"||next=="&"||next=="*")return i;
+            break;
+        }else if(t.V(i)==";"||t.V(i)=="=")break;
+    }
+    return open;
+}
+
+std::vector<std::string> ArgumentList(std::string_view text,bool declarations) {
+    CppTokens t(text);
+    if(t.items.empty())return {};
+    std::vector<std::string> parts;
+    std::size_t begin=0;
+    bool inType=declarations;
+    for(std::size_t i=0;i<t.items.size();i=t.Next(i)){
+        if(t.V(i)=="<")i=TemplateEnd(t,i,inType);
+        else if(t.V(i)=="=")inType=false;
+        else if(t.V(i)==","){
+            parts.push_back(Trim(text.substr(begin,t.items[i].from-begin)));
+            begin=t.items[i].to;inType=declarations;
+        }
+    }
+    parts.push_back(Trim(text.substr(begin)));
+    return parts;
+}
+
+std::size_t ParameterName(const CppTokens& t,std::size_t end) {
+    bool sawType=false;
+    for(std::size_t i=0;i<end;i=t.Next(i)){
+        auto token=t.V(i);
+        if(token=="<"){i=TemplateEnd(t,i,true);continue;}
+        if(token=="("&&(t.V(i+1)=="*"||t.V(i+1)=="&")&&Identifier(t.V(i+2))&&t.V(i+3)==")")
+            return i+2; // void (*callback)(int)
+        if(!Identifier(token)||token=="const"||token=="volatile"||token=="typename"||
+           token=="class"||token=="struct"||token=="enum")continue;
+        if(sawType&&!Keyword(token)&&t.V(i-1)!="::"&&
+           (i+1==end||t.V(i+1)=="["||t.V(i+1)=="("))return i;
+        sawType=true;
+    }
+    return missing;
+}
+
+ScriptCallExpression DelimitedExpression(const CppTokens& t,std::string_view name,std::size_t open) {
+    const auto begin=t.items[open].to,end=t.items[t.items[open].mate].from;
+    return {std::string(name),std::string(t.source.substr(begin,end-begin)),begin,end};
+}
 
 bool HasToken(std::string_view text,std::string_view name) {
     if(name.empty())return false;
@@ -211,6 +267,57 @@ std::string DefaultName(NodeKind kind) {
     if(kind==NodeKind::Class)return "NewClass";
     return "variable";
 }
+}
+
+std::vector<std::string> SplitArguments(std::string_view arguments) {
+    return ArgumentList(arguments,false);
+}
+
+std::vector<ScriptParameter> FunctionParameters(std::string_view declarations) {
+    std::vector<ScriptParameter> parameters;
+    for(auto& part:ArgumentList(declarations,true)){
+        CppTokens t(part);
+        if(t.items.size()==1&&t.V(0)=="void"&&parameters.empty())continue;
+        if(t.items.empty())continue;
+        std::size_t end=0;
+        while(end<t.items.size()&&t.V(end)!="=")end=t.Next(end);
+        ScriptParameter parameter;
+        parameter.declaration=Trim(std::string_view(part).substr(0,end<t.items.size()?t.items[end].from:part.size()));
+        if(end<t.items.size())parameter.defaultValue=Trim(std::string_view(part).substr(t.items[end].to));
+        parameter.type=parameter.declaration;
+        auto name=ParameterName(t,end);
+        if(name!=missing){
+            parameter.name=t.V(name);
+            parameter.type.erase(t.items[name].from,t.items[name].to-t.items[name].from);
+            parameter.type=Trim(parameter.type);
+        }
+        parameters.push_back(std::move(parameter));
+    }
+    return parameters;
+}
+
+std::optional<ScriptCallExpression> ParseScriptCall(std::string_view expression) {
+    CppTokens t(expression);
+    if(t.bad!=missing)return {};
+    std::size_t begin=0,end=t.items.size();
+    while(begin<end&&t.V(begin)=="("&&t.items[begin].mate==end-1){++begin;--end;}
+    const bool awaited=t.V(begin)=="co_await";
+    if(awaited)++begin;
+    bool qualified=t.V(begin)=="riceOwner"&&(t.V(begin+1)=="->"||t.V(begin+1)==".");
+    if(qualified)begin+=2;
+    auto name=t.V(begin);
+    if(!Identifier(name)||Keyword(name))return {};
+    if(begin+1==end&&!awaited&&!qualified)return ScriptCallExpression{std::string(name),{}};
+    if(t.V(begin+1)!="("||t.items[begin+1].mate!=end-1)return {};
+    return DelimitedExpression(t,name,begin+1);
+}
+
+std::optional<ScriptCallExpression> ParseVectorInitializer(std::string_view expression,std::string_view type) {
+    if(type!="Vec2"&&type!="Vec3")return {};
+    CppTokens t(expression);
+    auto open=t.V(0)==type?1u:0u;
+    if(t.bad!=missing||(t.V(open)!="{"&&!(open&&t.V(open)=="("))||t.items[open].mate!=t.items.size()-1)return {};
+    return DelimitedExpression(t,type,open);
 }
 
 struct AuthoringParser {
@@ -709,6 +816,42 @@ bool ScriptDocument::CanSee(ScriptId symbol,ScriptId owner) const {
     auto* decl=Get(symbol);
     return decl&&Decl(decl->kind)&&Within(owner,decl->parent);
 }
+namespace {
+struct VisibleSymbol {
+    const ScriptNode* node=nullptr;
+    std::string parameterType;
+};
+
+VisibleSymbol ResolveVisibleSymbol(const ScriptDocument& doc,std::string_view name,ScriptId owner,ScriptId preferred=0) {
+    const auto* context=doc.Get(owner);
+    if(!preferred&&context){
+        auto ref=context->references.find(std::string(name));
+        if(ref!=context->references.end())preferred=ref->second;
+    }
+    if(preferred){
+        const auto* symbol=doc.Get(preferred);
+        if(symbol&&symbol->name==name&&doc.CanSee(symbol->id,owner))return {symbol,{}};
+        return {};
+    }
+    for(;;){
+        for(const auto& node:doc.Nodes())if(node.parent==owner&&Decl(node.kind)&&node.name==name)return {&node,{}};
+        if(!context)break;
+        if(context->kind==NodeKind::Function){
+            for(const auto& parameter:FunctionParameters(context->args))if(parameter.name==name)return {nullptr,parameter.type};
+        }
+        owner=context->parent;context=doc.Get(owner);
+    }
+    return {};
+}
+}
+const ScriptNode* ScriptDocument::FindVisibleFunction(std::string_view name,ScriptId owner,ScriptId preferred) const {
+    const auto* symbol=ResolveVisibleSymbol(*this,name,owner,preferred).node;
+    return symbol&&symbol->kind==NodeKind::Function?symbol:nullptr;
+}
+std::string ScriptDocument::VisibleVariableType(std::string_view name,ScriptId owner,ScriptId preferred) const {
+    auto symbol=ResolveVisibleSymbol(*this,name,owner,preferred);
+    return symbol.node&&symbol.node->kind==NodeKind::Variable?symbol.node->type:symbol.parameterType;
+}
 void ScriptDocument::TrackReferences(ScriptNode& n) const{
     auto fields=References(n);
     auto used=[&](std::string_view name){
@@ -716,23 +859,26 @@ void ScriptDocument::TrackReferences(ScriptNode& n) const{
     };
     std::erase_if(n.references,[&](const auto& ref){return !used(ref.first);});
     for(const auto& decl:nodes_)
-        if(decl.id!=n.id&&CanSee(decl.id,n.parent)&&!n.references.contains(decl.name)&&used(decl.name))
-            n.references.emplace(decl.name,decl.id);
+        if(decl.id!=n.id&&CanSee(decl.id,n.parent)&&!n.references.contains(decl.name)&&used(decl.name)){
+            if(auto* symbol=ResolveVisibleSymbol(*this,decl.name,n.parent).node)n.references.emplace(decl.name,symbol->id);
+        }
+}
+bool ScriptDocument::CanAwait(ScriptId owner) const {
+    for(auto* n=Get(owner);n;n=Get(n->parent)){
+        if(Returning(n->kind))return n->coroutine;
+        if(StateCallback(n->kind)||Callback(n->kind)||n->kind==NodeKind::Class)return false;
+    }
+    return false;
 }
 std::string ScriptDocument::AwaitCalls(std::string text, ScriptId owner) const {
-    bool coroutine=false;
-    for(auto* n=Get(owner);n;n=Get(n->parent)){
-        if(Returning(n->kind)){coroutine=n->coroutine;break;}
-        if(StateCallback(n->kind)||Callback(n->kind)||n->kind==NodeKind::Class)break;
-    }
-    if(!coroutine)return text;
+    if(!CanAwait(owner))return text;
     CppTokens t(text);
     std::vector<std::pair<std::size_t,std::string>> insertions;
     for(std::size_t i=0;i+1<t.items.size();++i){
         if(t.V(i+1)!="("||!Identifier(t.V(i))||t.items[i+1].mate==missing)continue;
         if(i&&(t.V(i-1)=="co_await"||t.V(i-1)=="."||t.V(i-1)=="::"||t.V(i-1)=="->"))continue;
-        bool known=std::any_of(nodes_.begin(),nodes_.end(),[&](const auto& f){return f.coroutine&&f.kind==NodeKind::Function&&f.name==t.V(i)&&CanSee(f.id,owner);});
-        if(!known)continue;
+        auto* fn=FindVisibleFunction(t.V(i),owner);
+        if(!fn||!fn->coroutine)continue;
         insertions.push_back({t.items[i].from,"(co_await "});
         insertions.push_back({t.items[t.items[i+1].mate].to,")"});
     }
@@ -761,12 +907,15 @@ std::string ScriptDocument::BindOwner(const std::string& text,ScriptId owner) co
         if(i>=2&&(t.V(i-2)=="."||t.V(i-2)=="::"||t.V(i-2)=="->"))continue;
         if(!Identifier(tok))continue;
         bool builtin=tok=="ScriptBase"&&t.V(i)=="::"&&(t.V(i+1)=="Move"||t.V(i+1)=="ChangeGameSpeed");
-        bool field=builtin||sdk.contains(tok)||std::any_of(nodes_.begin(),nodes_.end(),[&](const auto& n){
-            return !n.parent&&(n.kind==NodeKind::Variable||n.kind==NodeKind::Function)&&n.name==tok;
-        });
+        const auto* symbol=ResolveVisibleSymbol(*this,tok,owner).node;
+        bool field=builtin||sdk.contains(tok)||(symbol&&!symbol->parent&&
+            (symbol->kind==NodeKind::Variable||symbol->kind==NodeKind::Function));
         if(field)out.insert(t.items[i-1].from,"riceOwner->");
     }
     return out;
+}
+std::string ScriptDocument::NativeExpression(std::string text,ScriptId owner) const {
+    return BindOwner(AwaitCalls(std::move(text),owner),owner);
 }
 bool ScriptDocument::ValueType(std::string_view type,std::vector<ScriptId>& visiting) const{
     if(Exportable(type))return true;
@@ -874,9 +1023,9 @@ bool ScriptDocument::Insert(ScriptNode n,std::string text){
         auto useOwner=(n.kind!=NodeKind::OnCreate&&n.kind!=NodeKind::OnDestroy)||!parent||Text(parent->id).find("/*rice:owner*/")!=missing;
         text=BuildItem(n,parent,pad,useOwner?rootName_:std::string{});
         if(n.kind==NodeKind::Call){
-            auto target=std::find_if(nodes_.begin(),nodes_.end(),[&](const auto& fn){return fn.kind==NodeKind::Function&&fn.name==n.name&&CanSee(fn.id,n.parent);});
+            auto* target=FindVisibleFunction(n.name,n.parent,n.references.contains(n.name)?n.references.at(n.name):0);
             auto call=n.name+"("+n.args+")";
-            if(target!=nodes_.end()&&!target->coroutine)text=Mark(n)+call+";";
+            if(target&&!target->coroutine)text=Mark(n)+call+";";
             else if(Synchronous(n.parent))text=Mark(n)+"RunNow("+call+");";
         }
         if(n.kind==NodeKind::EndFunction&&Synchronous(n.parent))text=Mark(n)+"return"+(n.value.empty()?"":" "+n.value)+";";
@@ -1016,6 +1165,8 @@ bool ScriptDocument::Edit(ScriptId id,const ScriptNode& next){
             i=Index(id);if(i==missing)return false;
         }
     }
+    if(n.kind==NodeKind::Variable&&n.parent&&Get(n.parent)->kind!=NodeKind::Class)
+        n.value=NativeExpression(n.value,n.parent);
     if(n.kind==NodeKind::Change||n.kind==NodeKind::Condition||n.kind==NodeKind::ElseIf||n.kind==NodeKind::EndFunction||n.kind==NodeKind::Wait||n.kind==NodeKind::Move||n.kind==NodeKind::Activate)
         n.value=AwaitCalls(n.value,n.parent);
     if(n.kind==NodeKind::Move)for(auto& coordinate:n.moveCoordinates)coordinate=AwaitCalls(coordinate,n.parent);
@@ -1054,9 +1205,9 @@ bool ScriptDocument::Edit(ScriptId id,const ScriptNode& next){
         }
         std::string code=Statement(n);
         if(n.kind==NodeKind::Call){
-            auto target=std::find_if(nodes_.begin(),nodes_.end(),[&](const auto& fn){return fn.kind==NodeKind::Function&&fn.name==n.name&&CanSee(fn.id,n.parent);});
+            auto* target=FindVisibleFunction(n.name,n.parent,n.references.contains(n.name)?n.references.at(n.name):0);
             auto call=n.name+"("+n.args+")";
-            if(target!=nodes_.end()&&!target->coroutine)code=call+";";
+            if(target&&!target->coroutine)code=call+";";
             else if(Synchronous(n.parent))code="RunNow("+call+");";
         }
         if(n.kind==NodeKind::EndFunction&&Synchronous(n.parent))code="return"+(n.value.empty()?"":" "+n.value)+";";

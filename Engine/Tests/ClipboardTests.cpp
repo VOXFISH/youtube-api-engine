@@ -33,6 +33,15 @@ int main(){try{
     }
 
     ComponentRegistry registry;EditorSession editor(registry);EditorClipboard clipboard;
+    {
+        Scene scene;
+        auto& target=scene.CreateGameObject("Legacy clipboard target");
+        ComponentSnapshot::Apply(target,{{"Rigidbody","0\n1 2 3\n7\n0.25\n0\n1\n"}},registry);
+        auto* body=target.GetComponent<Rigidbody>();
+        Check(body&&!body->enabled&&body->velocity==Vector3(1,2,3)&&body->mass==7&&body->restitution==.25f&&!body->useGravity&&body->kinematic,"Old Rigidbody clipboard and prefab fields survive the rename");
+        auto snapshot=ComponentSnapshot::CaptureAll(target,registry);
+        Check(snapshot.size()==1&&snapshot.front().type=="Physics","Copied physics components use the new name");
+    }
     auto& parent=editor.scene->CreateGameObject("parent");parent.transform.position={10,2,3};auto parentID=parent.GetID();
     auto& obj=editor.scene->CreateGameObject("source");obj.SetParent(&parent);obj.transform.position={1,2,3};obj.transform.rotation={15,25,35};obj.transform.localScale={2,3,4};auto sourceID=obj.GetID();auto originalWorld=Vector3(obj.GetWorldMatrix()[3]);
     auto& light=obj.AddComponent<Light>();light.intensity=3.1415927f;light.enabled=false;obj.AddComponent<SpriteRenderer>().asset="image-id";

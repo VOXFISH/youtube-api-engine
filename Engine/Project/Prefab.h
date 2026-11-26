@@ -25,12 +25,15 @@ class PrefabAsset {
         if(nodes.empty()||nodes.size()>10000)throw std::runtime_error("Invalid prefab object count");
         indices.clear();order.clear();
         for(size_t i=0;i<nodes.size();++i){
-            const auto& node=nodes[i];
+            auto& node=nodes[i];
             if(!node.source||!indices.emplace(node.source,i).second)throw std::runtime_error("Duplicate prefab object ID");
             std::set<std::string> types;
-            for(const auto& component:node.components)
-                if(!registry.Find(component.type)||!types.insert(component.type).second)
+            for(auto& component:node.components){
+                auto* type=registry.Find(component.type);
+                if(!type||!types.insert(type->name).second)
                     throw std::runtime_error("Unknown or duplicate prefab component: "+component.type);
+                component.type=type->name;
+            }
         }
         if(nodes.front().parent||nodes.front().group)throw std::runtime_error("Prefab root must be detached");
         std::vector<size_t> waiting(nodes.size());

@@ -40,7 +40,138 @@ static void CompareSteps(Populate populate,Mutate mutate,int steps){
         Compare(reference,optimized);
     }
 }
+
+// Exercise both the editor overlap query and the fixed-step event path.
+static void CheckTriggerLifecycle(Scene& scene,GameObject& source,GameObject& probe,Vector3 contact,Vector3 gap){
+    auto& recorder=probe.AddComponent<ContactRecorder>();
+    PhysicsSystem system;
+    const auto id=source.GetID();
+    auto step=[&](Vector3 position,bool overlaps){
+        probe.transform.position=position;
+        for(bool bvh:{false,true})
+            Check(CollisionSystem::Update(scene,bvh)==size_t(overlaps),"Overlap queries must use the collider geometry");
+        system.Update(scene,1.f/60);
+    };
+    step(gap,false);
+    Check(recorder.events.empty(),"Overlapping bounds alone do not fire a trigger");
+    step(contact,true);
+    step(contact,true);
+    step(gap,false);
+    Check(recorder.events==std::vector<std::tuple<int,EntityID>>{{3,id},{4,id},{5,id}},
+          "Shape triggers deliver enter, stay, and exit for the same peer");
+}
+
+static void TestRoundContacts(){
+    for(bool useBox:{false,true}){
+        Scene scene;
+        auto& source=scene.CreateGameObject("Trigger sphere");
+        auto& sphere=source.AddComponent<SphereCollider>();sphere.radius=1;sphere.isTrigger=true;
+        auto& probe=scene.CreateGameObject("Probe");
+        if(useBox)probe.AddComponent<BoxCollider>().size=Vector3(.4f);
+        else probe.AddComponent<SphereCollider>().radius=.2f;
+        CheckTriggerLifecycle(scene,source,probe,{.9f,0,0},{.95f,.95f,.95f});
+    }
+}
+
+static void TestPolygonContacts(){
+    enum class ProbeShape { Sphere, Box, Polygon };
+    for(auto probeShape:{ProbeShape::Sphere,ProbeShape::Box,ProbeShape::Polygon}){
+        Scene scene;
+        auto& source=scene.CreateGameObject("Two separate triangles");
+        auto& polygon=source.AddComponent<PolygonCollider>();polygon.isTrigger=true;
+        auto& probe=scene.CreateGameObject("Probe");
+        if(probeShape==ProbeShape::Sphere)probe.AddComponent<SphereCollider>().radius=.2f;
+        else if(probeShape==ProbeShape::Box)probe.AddComponent<BoxCollider>().size=Vector3(.4f);
+        else {probe.AddComponent<PolygonCollider>();probe.AddComponent<MeshRenderer>();probe.transform.localScale=Vector3(.4f);}
+        Check(CollisionSystem::Update(scene)==0,"PolygonCollider waits for a source mesh");
+        auto& mesh=source.AddComponent<MeshRenderer>();mesh.shape=int(BasicShape::Custom);
+        Check(!SceneRenderer::CustomArray(mesh)&&mesh.custom.Empty()&&CollisionSystem::Update(scene)==0,
+              "Rendering an empty custom mesh leaves its polygon collider inactive");
+        mesh.custom.positions={{-3,-1,0},{-1,-1,0},{-2,1,0},{1,-1,0},{3,-1,0},{2,1,0}};
+        mesh.custom.indices={0,1,2,3,4,5};mesh.custom.uv.resize(6);mesh.custom.Touch();
+        CheckTriggerLifecycle(scene,source,probe,{2,0,.05f},{0,0,.05f});
+
+        // Move one triangle into the gap without changing vertex or index counts.
+        for(int i=3;i<6;++i)mesh.custom.positions[i].x-=2;
+        mesh.custom.Touch();
+        Check(CollisionSystem::Update(scene)==1,"Editing mesh vertices updates polygon collision");
+        source.transform.rotation.z=90;
+        source.transform.position={4,3,0};
+        Check(CollisionSystem::Update(scene)==0,"Moving the mesh moves its polygon collider");
+        probe.transform.position=Vector3(source.GetWorldMatrix()*Vector4(0,0,.05f,1));
+        Check(CollisionSystem::Update(scene)==1,"Transformed polygon remains collidable");
+
+        // An object deep inside a closed shell has no surface intersection.
+        source.transform.position=Vector3(0);source.transform.rotation=Vector3(0);probe.transform.position=Vector3(0);
+        Check(CollisionSystem::Update(scene)==1,"The probe touches the edited triangle");
+        ShapeMesh replacement=mesh.custom;
+        for(auto& point:replacement.positions)point.x+=9;
+        mesh.custom=std::move(replacement);
+        Check(CollisionSystem::Update(scene)==0,"Replacing a mesh with the same revision and counts invalidates its collider");
+        mesh.custom=ShapeMesh::FromPrimitive(BasicShape::Cube);mesh.custom.Touch();
+        Check(CollisionSystem::Update(scene)==1,"A closed shell contains a smaller collider");
+        mesh.custom.indices.resize(mesh.custom.indices.size()-6);
+        mesh.custom.uv.resize(mesh.custom.indices.size());mesh.custom.Touch();
+        Check(CollisionSystem::Update(scene)==0,"An open shell has no solid interior");
+    }
+}
+
+static void TestDisconnectedShells(){
+    Scene scene;
+    auto& source=scene.CreateGameObject("Separated solid shells");source.AddComponent<PolygonCollider>();
+    auto& mesh=source.AddComponent<MeshRenderer>();mesh.shape=int(BasicShape::Custom);
+    auto cube=ShapeMesh::FromPrimitive(BasicShape::Cube);
+    for(float offset:{-2.f,2.f}){
+        uint32_t start=uint32_t(mesh.custom.positions.size());
+        for(auto point:cube.positions)mesh.custom.positions.push_back(point+Vector3(offset,0,0));
+        for(auto index:cube.indices)mesh.custom.indices.push_back(start+index);
+    }
+    mesh.custom.uv.resize(mesh.custom.indices.size());mesh.custom.Touch();
+    auto& probe=scene.CreateGameObject("Inner sphere");probe.AddComponent<SphereCollider>().radius=.1f;
+    Check(CollisionSystem::Update(scene)==0,"The gap between disconnected closed shells is empty");
+    for(float x:{-2.f,2.f}){
+        probe.transform.position.x=x;
+        Check(CollisionSystem::Update(scene)==1,"Each disconnected closed shell has a solid interior");
+    }
+    probe.SetActive(false);scene.settings.ground=false;
+    auto& moving=scene.CreateGameObject("Piece entering the gap-side face");
+    moving.transform.position={1.4f,0,0};moving.transform.localScale=Vector3(.4f);
+    moving.AddComponent<MeshRenderer>();moving.AddComponent<PolygonCollider>();
+    moving.AddComponent<Rigidbody>().useGravity=false;
+    PhysicsSystem physics;physics.Update(scene,1.f/60);
+    Check(glm::length(moving.transform.position-Vector3(1.3f,0,0))<.001f,
+          "Mesh contact pushes a piece back into the gap by its actual penetration depth");
+}
+
+static void TestShapeResponse(){
+    Scene scene;
+    auto& ramp=scene.CreateGameObject("Ramp");ramp.AddComponent<PolygonCollider>();
+    auto& mesh=ramp.AddComponent<MeshRenderer>();mesh.shape=int(BasicShape::Custom);
+    mesh.custom.positions={{2,0,0},{0,2,0},{0,0,2}};
+    mesh.custom.indices={0,1,2};mesh.custom.uv.resize(3);mesh.custom.Touch();
+    auto& ball=scene.CreateGameObject("Ball");ball.transform.position=Vector3(.8f);
+    ball.AddComponent<SphereCollider>().radius=.3f;
+    auto& body=ball.AddComponent<Rigidbody>();body.velocity=Vector3(-1);body.useGravity=false;body.restitution=1;
+    PhysicsSystem system;system.Update(scene,1.f/60);
+    Check(glm::length(body.velocity-Vector3(1))<.002f,"Sphere bounces along the triangle normal on a sloped mesh");
+    Check(glm::all(glm::greaterThan(ball.transform.position,Vector3(.8f)))&&ramp.transform.position==Vector3(0),
+          "Penetration correction moves the ball away from the fixed ramp");
+
+    Scene floorScene;floorScene.settings.ground=true;
+    auto& sphere=floorScene.CreateGameObject("Scaled sphere");
+    sphere.transform.position={-2,.2f,0};sphere.transform.localScale={1,2,1};
+    sphere.AddComponent<SphereCollider>().radius=.5f;sphere.AddComponent<Rigidbody>();
+    auto& cube=floorScene.CreateGameObject("Polygon on ground");
+    cube.transform.position={2,.25f,0};cube.transform.localScale={1,2,1};
+    cube.AddComponent<PolygonCollider>();cube.AddComponent<MeshRenderer>();cube.AddComponent<Rigidbody>();
+    PhysicsSystem groundSystem;
+    for(int step=0;step<4;++step)groundSystem.Update(floorScene,1.f/60);
+    Check(std::abs(sphere.transform.position.y-1.f)<.001f&&std::abs(cube.transform.position.y-1.f)<.001f,
+          "Scaled spheres and mesh-derived polygons rest on the scene ground");
+}
+
 int main(){try{
+    TestRoundContacts();TestPolygonContacts();TestDisconnectedShells();TestShapeResponse();
     {
         Scene scene;scene.settings.ground=true;
         auto& probe=Body(scene,1,{0,.25f,0},true);

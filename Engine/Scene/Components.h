@@ -1,12 +1,13 @@
 #pragma once
 #include "Rice/Benchmark.h"
+#include "Colliders.h"
 #include "Scene.h"
 #include "ScriptComponent.h"
 #include "EnvironmentRenderer.h"
 #include "CameraComponent.h"
 #include "ShapeMesh.h"
 #include "TriangleMaterials.h"
-#include "MeshIntersection.h"
+#include "MeshRenderer.h"
 #include "DynamicReflection.h"
 #include "ReflectionIntersection.h"
 #include "SceneSpatial.h"
@@ -22,44 +23,6 @@
 #include <map>
 #include <span>
 namespace Rice {
-struct MeshRenderer : Component {
-    bool castsShadow=true;
-    Color color{0.7f,0.7f,0.8f,1};
-    int shape = int(BasicShape::Cube);
-    ShapeMesh custom;
-    std::string shapeAsset;
-    TriangleMaterials triangleMaterials;
-    mutable uint64_t boundsRevision=0;
-    mutable const Vector3* boundsPositions=nullptr;
-    mutable size_t boundsPositionCount=0;
-    mutable std::pair<Vector3,Vector3> cachedLocalBounds;
-    std::optional<std::pair<Vector3,Vector3>> GeometryBounds()const override{
-        if(shape==int(BasicShape::Custom)){
-            if(!GameObject::WorldCacheEnabled())return custom.Bounds();
-            if(boundsRevision!=custom.revision||boundsPositions!=custom.positions.data()||boundsPositionCount!=custom.positions.size()){
-                cachedLocalBounds=custom.Bounds();boundsRevision=custom.revision;
-                boundsPositions=custom.positions.data();boundsPositionCount=custom.positions.size();
-            }
-            return cachedLocalBounds;
-        }
-        if(shape==int(BasicShape::Circle)||shape==int(BasicShape::Rectangle))return std::pair{Vector3(-.5f,-.5f,0),Vector3(.5f,.5f,0)};
-        return std::pair{Vector3(-.5f),Vector3(.5f)};
-    }
-    Ref<VertexArray> customArray;
-    uint64_t uploadedRevision=0;
-    MeshIntersection intersection;
-    uint64_t intersectionRevision=0;
-    const MeshIntersection& Intersection(){
-        RICE_BENCHMARK_FUNCTION();
-        if(intersectionRevision!=custom.revision){intersection.Rebuild(custom);intersectionRevision=custom.revision;}
-        return intersection;
-    }
-    void SetShape(int next){
-        RICE_BENCHMARK_FUNCTION();
-        if(next==int(BasicShape::Custom)&&custom.Empty())custom=ShapeMesh::FromPrimitive(BasicShape(std::clamp(shape,0,5)));
-        shape=next;
-    }
-};
 struct ObjectScript : ScriptComponentBase {};
 struct BlankScript : ScriptComponentBase {};
 struct SingletonManager : ScriptComponentBase {
@@ -112,56 +75,6 @@ struct Light : Component {
     Vector3 WorldPosition()const{ RICE_BENCHMARK_FUNCTION(); return Vector3(GetGameObject().GetWorldMatrix()[3]);}
     Vector3 WorldDirection()const{ RICE_BENCHMARK_FUNCTION(); auto value=GetGameObject().GetWorldRotation()*direction;return glm::length(value)>.0001f?glm::normalize(value):Vector3(0,-1,0);}
 };
-struct BoxCollider : Component {
-    Vector3 center{0}, size{1}; bool overlapping = false, isTrigger = false;
-    mutable bool boundsCached=false;
-    mutable Matrix4 boundsWorld{1};
-    mutable Vector3 boundsCenter{0},boundsSize{0};
-    mutable std::pair<Vector3,Vector3> cachedBounds;
-    std::pair<Vector3,Vector3> GetBounds() const {
-        RICE_BENCHMARK_FUNCTION();
-        auto matrix = GetGameObject().GetWorldMatrix();
-        if(GameObject::WorldCacheEnabled()&&boundsCached&&boundsWorld==matrix&&boundsCenter==center&&boundsSize==size)return cachedBounds;
-        Vector3 low(std::numeric_limits<float>::max()), high(-std::numeric_limits<float>::max());
-        for (int i=0;i<8;++i) {
-            Vector3 corner = center + glm::abs(size)*Vector3(i&1 ? .5f:-.5f,i&2 ? .5f:-.5f,i&4 ? .5f:-.5f);
-            Vector3 world(matrix*Vector4(corner,1)); low=glm::min(low,world); high=glm::max(high,world);
-        }
-        if(GameObject::WorldCacheEnabled()){boundsCached=true;boundsWorld=matrix;boundsCenter=center;boundsSize=size;cachedBounds={low,high};}
-        return {low,high};
-    }
-};
-class CollisionSystem {
-public:
-    static size_t Update(Scene& scene,bool useBVH=true,size_t* comparisons=nullptr) {
-        RICE_BENCHMARK_FUNCTION();
-        if(comparisons)*comparisons=0;
-        std::vector<BoxCollider*> colliders;
-        for (auto& obj:scene.GetObjects()) if (auto* c=obj->GetComponent<BoxCollider>()) {
-            c->overlapping=false; if(obj->IsActive() && c->enabled) colliders.push_back(c);
-        }
-        size_t count=0;
-        if(useBVH){
-            std::vector<SpatialBounds> bounds;bounds.reserve(colliders.size());
-            for(auto* collider:colliders){auto [low,high]=collider->GetBounds();bounds.push_back({low,high});}
-            SpatialBVH tree;tree.Build(bounds);
-            for(size_t i=0;i<colliders.size();++i)tree.QueryOverlaps(bounds[i],[&](size_t j){
-                if(j<=i)return;
-                if(comparisons)++*comparisons;
-                colliders[i]->overlapping=colliders[j]->overlapping=true;++count;
-            });
-            return count;
-        }
-        for(size_t i=0;i<colliders.size();++i) for(size_t j=i+1;j<colliders.size();++j) {
-            if(comparisons)++*comparisons;
-            auto [a,b]=colliders[i]->GetBounds(); auto [c,d]=colliders[j]->GetBounds();
-            if(glm::all(glm::lessThanEqual(a,d)) && glm::all(glm::lessThanEqual(c,b))) {
-                colliders[i]->overlapping=colliders[j]->overlapping=true; ++count;
-            }
-        }
-        return count;
-    }
-};
 class SceneRenderer {
 public:
     void SetShadowsEnabled(bool enabled){shadowsEnabled=enabled;}
@@ -173,7 +86,7 @@ public:
     const auto& GetShadowInvalidationStats()const{return shadowInvalidation.GetStats();}
     struct ShadowDrawStats {size_t candidates=0,submitted=0,drawCalls=0,instances=0;};
     const ShadowDrawStats& GetShadowDrawStats()const{return shadowDrawStats;}
-    struct SpatialStats {size_t captureFaces=0,captureCandidates=0,captureSubmitted=0,boundsUpdates=0,builds=0,refits=0;};
+    struct SpatialStats {size_t captureFaces=0,captureCandidates=0,captureSubmitted=0,boundsUpdates=0,builds=0,refits=0,reflectionGeometryUploads=0;};
     void SetSpatialCullingEnabled(bool enabled){spatialCullingEnabled=enabled;}
     const SpatialStats& GetSpatialStats()const{return spatialStats;}
     struct RenderStats {
@@ -359,6 +272,94 @@ void main(){
     EnvironmentRenderer environment;
     std::map<EntityID,Scope<DynamicReflection>> reflections;
     uint64_t reflectionScene=0;
+    struct ReflectionGeometry {
+        std::vector<Vector4> groups,payload;
+        std::vector<EntityID> owners;
+        static Vector3 BoundsPadding(const SpatialBounds& bounds){
+            return glm::max(glm::abs(bounds.low),glm::abs(bounds.high))*(8.f*std::numeric_limits<float>::epsilon())+Vector3(.00001f);
+        }
+        SpatialBounds AppendTriangles(const ShapeMesh& mesh,const Matrix4& world,size_t begin,size_t end,const SpatialBVH* hierarchy=nullptr){
+            SpatialBounds bounds{Vector3(std::numeric_limits<float>::max()),Vector3(std::numeric_limits<float>::lowest())};
+            for(size_t i=begin;i<end;++i){
+                size_t first=3*(hierarchy?hierarchy->PrimitiveIndex(i):i);
+                for(size_t c=first;c<first+3;++c){
+                    auto vertex=world*Vector4(mesh.positions[mesh.indices[c]],1);
+                    bounds.low=glm::min(bounds.low,Vector3(vertex));
+                    bounds.high=glm::max(bounds.high,Vector3(vertex));
+                    payload.push_back(vertex);
+                }
+            }
+            return bounds;
+        }
+        SpatialBounds AppendBvhNode(const ShapeMesh& mesh,const Matrix4& world,const SpatialBVH& hierarchy,int index){
+            const auto& node=hierarchy.GetNode(index);
+            size_t start=payload.size();
+            payload.resize(start+2);
+            SpatialBounds bounds;
+            size_t triangleCount=0;
+            if(node.left<0){
+                triangleCount=node.end-node.begin;
+                bounds=AppendTriangles(mesh,world,node.begin,node.end,&hierarchy);
+            }else{
+                auto left=AppendBvhNode(mesh,world,hierarchy,node.left);
+                auto right=AppendBvhNode(mesh,world,hierarchy,node.right);
+                bounds={glm::min(left.low,right.low),glm::max(left.high,right.high)};
+            }
+            // Depth-first subtree: [low, relative texel span], [high, leaf triangle count], children or triangles.
+            // The span is local to one mesh and fits exactly in a float for every supported ShapeMesh.
+            auto pad=BoundsPadding(bounds);
+            payload[start]=Vector4(bounds.low-pad,float(payload.size()-start));
+            payload[start+1]=Vector4(bounds.high+pad,float(triangleCount));
+            return bounds;
+        }
+    };
+    static ReflectionGeometry BuildReflectionGeometry(Scene& scene){
+        RICE_BENCHMARK_FUNCTION();
+        ReflectionGeometry data;
+        for(const auto& object:scene.GetObjects()){
+            if(!object->IsActive())continue;
+            auto* mesh=object->GetComponent<MeshRenderer>();
+            auto* sprite=object->GetComponent<SpriteRenderer>();
+            if(!(mesh&&mesh->enabled)&&!(sprite&&sprite->enabled))continue;
+            auto world=object->GetWorldMatrix();
+            if(std::abs(glm::determinant(world))<1e-8f)continue;
+            // A mesh and a sprite on the same object share its first group index.
+            const size_t ownerIndex=data.owners.size();
+            auto group=[&](int shape,const SpatialBounds& bounds,size_t texels){
+                // Three header texels per group, followed in the buffer by all group payloads.
+                // Expand the box slightly to keep grazing and zero-thickness hits.
+                auto pad=ReflectionGeometry::BoundsPadding(bounds);
+                data.groups.emplace_back(float(ownerIndex),float(shape),float(texels),0);
+                data.groups.emplace_back(bounds.low-pad,0);
+                data.groups.emplace_back(bounds.high+pad,0);
+                data.owners.push_back(object->GetID());
+            };
+            auto primitive=[&](int shape,const Component& component){
+                auto [low,high]=*component.GeometryBounds();
+                group(shape,SpatialBounds::Transform(world,{low,high}),4);
+                auto inverse=glm::inverse(world);
+                for(int column=0;column<4;++column)data.payload.push_back(inverse[column]);
+            };
+            if(mesh&&mesh->enabled){
+                if(mesh->shape==int(BasicShape::Custom)){
+                    const auto& shape=mesh->custom;
+                    const size_t triangles=shape.indices.size()/3;
+                    constexpr size_t bvhThreshold=64;
+                    if(triangles>=bvhThreshold){
+                        size_t start=data.payload.size();
+                        auto bounds=data.AppendBvhNode(shape,world,mesh->Intersection().Hierarchy(),0);
+                        constexpr int bvhShape=7; // Reflection shader tag following BasicShape::Custom.
+                        group(bvhShape,bounds,data.payload.size()-start);
+                    }else if(triangles){
+                        auto bounds=data.AppendTriangles(shape,world,0,triangles);
+                        group(mesh->shape,bounds,triangles*3);
+                    }
+                }else primitive(std::clamp(mesh->shape,0,5),*mesh);
+            }
+            if(sprite&&sprite->enabled)primitive(int(BasicShape::Rectangle),*sprite);
+        }
+        return data;
+    }
     Ref<VertexArray> cube,quad;
     std::vector<Ref<VertexArray>> shapes;
     Ref<Shader> shader;
@@ -476,7 +477,7 @@ void main(){
 public:
     static Ref<VertexArray> CustomArray(MeshRenderer& mesh){
         RICE_BENCHMARK_FUNCTION();
-        if(mesh.custom.Empty())mesh.custom=ShapeMesh::FromPrimitive(BasicShape::Cube);
+        if(mesh.custom.indices.empty())return {};
         if(!mesh.customArray||mesh.uploadedRevision!=mesh.custom.revision){
             auto vertices=mesh.custom.RenderVertices();std::vector<uint32_t> indices(mesh.custom.indices.size());
             for(uint32_t i=0;i<indices.size();++i)indices[i]=i;
@@ -512,7 +513,7 @@ worldPosition=world.xyz;N=transpose(inverse(mat3(transform)))*normal;UV=uvRect.x
 in vec3 N; in vec3 worldPosition; in vec2 UV; in vec4 vertexColor; flat in uvec2 receiverOwner; out vec4 result;
 uniform vec3 lightColor[8], lightDirection[8]; uniform vec4 lightPositionRange[8]; uniform int lightType[8]; uniform int lightCount, sprite, textured; uniform sampler2D image;
 uniform int useMaterial, unlit, shapeHighlight;
-uniform int useReflection, flatReflection;
+uniform int useReflection, flatReflection, preciseReflection;
 uniform vec4 flatReflectionPlane;
 )" )+ReflectionIntersectionGLSL+ShadowSamplingGLSL+R"(
 uniform samplerCube environmentMap;
@@ -569,7 +570,8 @@ if(useMaterial==1 && useReflection==1){
     }
     float nv=clamp(dot(reflectionNormal,V),0.0,1.0);
     vec3 fresnel=f0+(1.0-f0)*pow(1.0-nv,5.0);
-    vec3 direction=correctedReflectionDirection(reflectionOrigin,reflect(-V,reflectionNormal));
+    vec3 direction=reflect(-V,reflectionNormal);
+    if(preciseReflection==1)direction=correctedReflectionDirection(reflectionOrigin,direction);
     vec3 environment=vec3(0);
     if(dot(direction,direction)>.00001)
         environment=textureLod(environmentMap,direction,roughness*reflectionMaxLod).rgb;
@@ -581,6 +583,7 @@ result=vec4(light,c.a);}
     void RenderShape(MeshRenderer& mesh,const Camera& camera,Material* material=nullptr,Vector3 pivot=Vector3(0),
                      std::span<const uint32_t> highlightedTriangles={},const GameObject* lightingSource=nullptr){
         RICE_BENCHMARK_FUNCTION();
+        if(mesh.custom.indices.empty())return;
         Renderer::BeginScene(camera);shader->Bind();
         shader->SetUniformInt("u_Instanced",0);
         shader->SetUniformInt("unlit",lightingSource?0:1);shader->SetUniformInt("sprite",0);
@@ -638,7 +641,7 @@ result=vec4(light,c.a);}
         cubeInstances.clear();
         GLint viewport[4];
         glGetIntegerv(GL_VIEWPORT,viewport);
-        struct Receiver { ReflectionProbe* probe;float size; };
+        struct Receiver { ReflectionProbe* probe;float size;bool precise; };
         std::map<EntityID,Receiver> receivers;
         std::vector<ReflectionProbe*> probes;
         if(!capturing){
@@ -661,7 +664,8 @@ result=vec4(light,c.a);}
             std::erase_if(reflectionShadowVersions,[&](const auto& entry){return !reflections.contains(entry.first);});
             scene.EachComponent<MeshRenderer>([&](MeshRenderer& mesh) {
                 auto& object = mesh.GetGameObject();
-                if (!mesh.enabled || !object.IsActive() || object.GetComponent<MeshRenderer>() != &mesh) return;
+                if (probes.empty() || !mesh.enabled || mesh.reflectionMode==int(ReflectionMode::Off) ||
+                    !object.IsActive() || object.GetComponent<MeshRenderer>() != &mesh) return;
                 auto* material = object.GetComponent<Material>();
                 if (!(material && material->enabled) && !mesh.triangleMaterials.HasEnabled()) return;
                 auto world = object.GetWorldMatrix();
@@ -677,48 +681,30 @@ result=vec4(light,c.a);}
                 if(mesh.shape==int(BasicShape::Circle)||mesh.shape==int(BasicShape::Rectangle)){low.z=0;high.z=0;}
                 if(mesh.shape==int(BasicShape::Custom))std::tie(low,high)=*mesh.GeometryBounds();
                 float size=ReflectionPixelSize(world,camera.GetVPMatrix(),Vector2(viewport[2],viewport[3]),low,high);
-                receivers.emplace(object.GetID(),Receiver{selected,size});
+                receivers.emplace(object.GetID(),Receiver{selected,size,mesh.reflectionMode!=int(ReflectionMode::Direct)});
             });
-            std::vector<Vector4> geometry;
-            std::vector<EntityID> geometryOwners;
-            bool geometryBuilt=false;
+            std::optional<ReflectionGeometry> geometry;
             for(auto* probe:probes){
                 auto id=probe->GetGameObject().GetID();
+                bool visible=false,precise=false,large=false;
+                for(const auto& [objectID,receiver]:receivers){
+                    if(receiver.probe!=probe||receiver.size<=0)continue;
+                    visible=true;
+                    precise|=receiver.precise;
+                    large|=receiver.size>=std::max(probe->maxObjectSize,0.f);
+                }
+                if(!visible)continue;
                 auto& reflection=reflections[id];
                 if(!reflection)reflection=CreateScope<DynamicReflection>();
-                bool needsUpdate=reflection->SettingsChanged(*probe)||reflectionShadowVersions[id]!=shadowReflectionVersion;
-                for(auto& [objectID,receiver]:receivers)
-                    if(receiver.probe==probe && receiver.size>0 && receiver.size>=std::max(probe->maxObjectSize,0.f))needsUpdate=true;
+                bool needsUpdate=large||reflection->SettingsChanged(*probe,precise)||reflectionShadowVersions[id]!=shadowReflectionVersion;
                 if(!needsUpdate)continue;
                 PrepareCaptureScene(scene);
-                if(!geometryBuilt){
-                    for(auto& object:scene.GetObjects())if(object->IsActive()){
-                        auto world=object->GetWorldMatrix();
-                        if(std::abs(glm::determinant(world))<1e-8f)continue;
-                        auto inverse=glm::inverse(world);
-                        float ownerIndex=static_cast<float>(geometryOwners.size());
-                        auto append=[&](int shape){
-                            RICE_BENCHMARK_FUNCTION();
-                            for(int column=0;column<4;++column)geometry.push_back(inverse[column]);
-                            geometry.emplace_back(float(shape),ownerIndex,0,0);
-                            geometryOwners.push_back(object->GetID());
-                        };
-                        if(auto* mesh=object->GetComponent<MeshRenderer>();mesh && mesh->enabled){
-                            if(mesh->shape==int(BasicShape::Custom)){
-                                // Triangle records use the same five-texel stride as primitives.
-                                for(size_t t=0;t+2<mesh->custom.indices.size();t+=3){
-                                    for(int c=0;c<3;++c)geometry.push_back(world*Vector4(mesh->custom.positions[mesh->custom.indices[t+c]],1));
-                                    geometry.emplace_back(0.f);geometry.emplace_back(6.f,ownerIndex,0.f,0.f);geometryOwners.push_back(object->GetID());
-                                }
-                            }else append(std::clamp(mesh->shape,0,5));
-                        }
-                        if(auto* sprite=object->GetComponent<SpriteRenderer>();sprite && sprite->enabled)
-                            append(int(BasicShape::Rectangle));
-                    }
-                    geometryBuilt=true;
+                if(precise){
+                    if(!geometry)geometry=BuildReflectionGeometry(scene);
+                    reflection->SetGeometry(geometry->groups,geometry->payload,geometry->owners);
+                    ++spatialStats.reflectionGeometryUploads;
                 }
-                reflection->SetGeometry(geometry,geometryOwners);
-                reflection->Capture(*probe,[&](const Camera& captureCamera){
+                reflection->Capture(*probe,precise,[&](const Camera& captureCamera){
                     RICE_BENCHMARK_FUNCTION();
                     struct CaptureScope {unsigned& depth;CaptureScope(unsigned& value):depth(value){++depth;}~CaptureScope(){--depth;}} scope(captureDepth);
                     Render(scene,captureCamera,true,id);
@@ -800,7 +786,8 @@ result=vec4(light,c.a);}
                 ReflectionProbe* probe=receiver==receivers.end()?nullptr:receiver->second.probe;
                 float size=receiver==receivers.end()?0.f:receiver->second.size;
                 bool receivesReflection=probe && active && size>0;
-                bool flat=receivesReflection && mesh->shape!=int(BasicShape::Custom) && size<std::max(probe->maxObjectSize,0.f);
+                bool precise=receivesReflection && receiver->second.precise;
+                bool flat=precise && mesh->shape!=int(BasicShape::Custom) && size<std::max(probe->maxObjectSize,0.f);
                 shader->SetUniformInt("flatReflection",flat);
                 if(flat){
                     auto viewOffset=camera.GetPosition()-Vector3(world[3]);
@@ -826,11 +813,14 @@ result=vec4(light,c.a);}
                 if(receivesReflection){
                     auto& reflection=*reflections.at(probe->GetGameObject().GetID());
                     glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_CUBE_MAP,reflection.Texture());
-                    glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_BUFFER,reflection.GeometryTexture());
-                    shader->SetUniformInt("reflectionGeometryCount",reflection.GeometryCount());
-                    shader->SetUniformInt("reflectionReceiverIndex",reflection.ReceiverIndex(obj->GetID()));
-                    shader->SetUniformInt("reflectionProbeIndex",reflection.ReceiverIndex(probe->GetGameObject().GetID()));
-                    shader->SetUniformFloat3("reflectionCapturePosition",reflection.CapturePosition());
+                    shader->SetUniformInt("preciseReflection",precise);
+                    if(precise){
+                        glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_BUFFER,reflection.GeometryTexture());
+                        shader->SetUniformInt("reflectionGroupCount",reflection.GeometryGroupCount());
+                        shader->SetUniformInt("reflectionReceiverIndex",reflection.ReceiverIndex(obj->GetID()));
+                        shader->SetUniformInt("reflectionProbeIndex",reflection.ReceiverIndex(probe->GetGameObject().GetID()));
+                        shader->SetUniformFloat3("reflectionCapturePosition",reflection.CapturePosition());
+                    }
                     shader->SetUniformFloat("reflectionMaxLod",float(std::max(reflection.MipLevels()-1,0)));
                     if(probe->fixEdgeSeams)glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
                     else glDisable(GL_TEXTURE_CUBE_MAP_SEAMLESS);

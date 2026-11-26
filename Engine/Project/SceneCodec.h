@@ -2,6 +2,7 @@
 #include "Rice/Benchmark.h"
 #include "Assets.h"
 #include "Streaming/YouTubeListener.h"
+#include <string_view>
 #include <variant>
 namespace Rice {
 using Property=std::variant<bool*,int*,float*,std::string*,Vector2*,Vector3*,Vector4*,ShapeMesh*,EntityID*,TriangleMaterials*>;
@@ -17,16 +18,26 @@ struct ComponentType {
 class ComponentRegistry {
 public:
     std::vector<ComponentType> types;
+    static std::string_view CanonicalName(std::string_view name){
+        // Older scenes, prefabs and MonkeyScript targets use the original name.
+        if(name=="Rigidbody")return "Physics";
+        return name;
+    }
     template<class T,class F>void Register(std::string name,F fields,bool inspectorVisible=true){
         RICE_BENCHMARK_FUNCTION();
         if(Find(name))throw std::invalid_argument("Duplicate component registration");
         types.push_back({std::move(name),[](GameObject& o)->Component*{ RICE_BENCHMARK_FUNCTION(); return o.GetComponent<T>();},[](GameObject& o)->Component&{ RICE_BENCHMARK_FUNCTION(); return o.AddComponent<T>();},[](GameObject& o){ RICE_BENCHMARK_FUNCTION(); o.RemoveComponent<T>();},[fields](Component& c,const PropertyVisitor& visit){ RICE_BENCHMARK_FUNCTION(); visit("Enabled",&c.enabled);fields(static_cast<T&>(c),visit);},inspectorVisible});
     }
-    ComponentType* Find(const std::string& name){ RICE_BENCHMARK_FUNCTION(); for(auto& t:types)if(t.name==name)return &t;return nullptr;}
+    ComponentType* Find(std::string_view name){
+        RICE_BENCHMARK_FUNCTION();
+        name=CanonicalName(name);
+        for(auto& type:types)if(type.name==name)return &type;
+        return nullptr;
+    }
     ComponentRegistry(){
         RICE_BENCHMARK_FUNCTION();
         Register<SceneLayer>("Scene Layer",[](auto&,auto&){},false);
-        Register<MeshRenderer>("MeshRenderer",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Shape",&c.shape);f("Custom mesh",&c.custom);f("Shape asset",&c.shapeAsset);f("Triangle materials",&c.triangleMaterials);f("Cast shadows",&c.castsShadow);});
+        Register<MeshRenderer>("MeshRenderer",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Shape",&c.shape);f("Custom mesh",&c.custom);f("Shape asset",&c.shapeAsset);f("Triangle materials",&c.triangleMaterials);f("Cast shadows",&c.castsShadow);f("Reflection mode",&c.reflectionMode);});
         Register<CameraComponent>("Camera",[](auto& c,auto& f){f("Primary",&c.primary);f("Field of view",&c.fieldOfView);f("Near clip",&c.nearClip);f("Far clip",&c.farClip);});
         Register<CameraFollower>("Camera Follower",[](auto& c,auto& f){f("Camera",&c.camera);f("Translation",&c.transform.position);f("Rotation",&c.transform.rotation);f("Scale",&c.transform.localScale);f("Show in Shape Editor",&c.showInEditor);});
         Register<Anchor>("Anchor",[](auto& c,auto& f){f("Child",&c.child);f("Translation",&c.transform.position);f("Rotation",&c.transform.rotation);f("Scale",&c.transform.localScale);f("Show in Shape Editor",&c.showInEditor);});
@@ -56,7 +67,9 @@ public:
         Register<SpriteRenderer>("SpriteRenderer",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Image asset",&c.asset);f("Cast shadows",&c.castsShadow);});
         Register<Light>("Light",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Intensity",&c.intensity);f("Direction",&c.direction);f("Type",&c.type);f("Range",&c.range);f("Cast shadows",&c.castsShadow);});
         Register<BoxCollider>("BoxCollider",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Center",&c.center);f("Size",&c.size);f("Trigger",&c.isTrigger);});
-        Register<Rigidbody>("Rigidbody",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Velocity",&c.velocity);f("Mass",&c.mass);f("Restitution",&c.restitution);f("Gravity",&c.useGravity);f("Kinematic",&c.kinematic);});
+        Register<PolygonCollider>("Polygon Collider",[](auto& c,auto& f){f("Center",&c.center);f("Trigger",&c.isTrigger);});
+        Register<SphereCollider>("Sphere Collider",[](auto& c,auto& f){f("Center",&c.center);f("Radius",&c.radius);f("Trigger",&c.isTrigger);});
+        Register<Rigidbody>("Physics",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Velocity",&c.velocity);f("Mass",&c.mass);f("Restitution",&c.restitution);f("Gravity",&c.useGravity);f("Kinematic",&c.kinematic);});
         Register<SpriteAnimator>("SpriteAnimator",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Columns",&c.columns);f("Rows",&c.rows);f("Frames",&c.frames);f("FPS",&c.fps);f("Loop",&c.loop);f("Playing",&c.playing);});
         Register<AudioSource>("AudioSource",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Audio asset",&c.clip);f("Loop",&c.loop);f("Play on start",&c.playOnStart);f("Volume",&c.volume);});
         Register<UIText>("UIText",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Text",&c.text);f("Position",&c.position);f("Color",&c.color);f("Font size",&c.size);});
@@ -66,6 +79,11 @@ public:
 };
 inline void WriteProperty(std::ostream& out,Property property){ RICE_BENCHMARK_FUNCTION(); std::visit([&](auto* value){ RICE_BENCHMARK_FUNCTION(); using T=std::remove_cvref_t<decltype(*value)>;if constexpr(std::is_same_v<T,ShapeMesh>||std::is_same_v<T,TriangleMaterials>)value->Write(out);else if constexpr(std::is_same_v<T,std::string>)out<<std::quoted(*value);else if constexpr(std::is_arithmetic_v<T>)out<<*value;else for(int i=0;i<value->length();++i)out<<(*value)[i]<<' ';},property);}
 inline void ReadProperty(std::istream& in,Property property){ RICE_BENCHMARK_FUNCTION(); std::visit([&](auto* value){ RICE_BENCHMARK_FUNCTION(); using T=std::remove_cvref_t<decltype(*value)>;if constexpr(std::is_same_v<T,ShapeMesh>||std::is_same_v<T,TriangleMaterials>)value->Read(in);else if constexpr(std::is_same_v<T,std::string>){in>>std::quoted(*value);if(value->size()>65536)throw std::runtime_error("Property too long");}else if constexpr(std::is_arithmetic_v<T>){in>>*value;if constexpr(std::is_floating_point_v<T>)if(!std::isfinite(*value))throw std::runtime_error("Nonfinite property");}else for(int i=0;i<value->length();++i){in>>(*value)[i];if(!std::isfinite((*value)[i]))throw std::runtime_error("Nonfinite vector");}},property);if(!in)throw std::runtime_error("Invalid property");}
+// Omit the legacy reflection behavior so scenes and positional prefab payloads
+// that use it retain their existing representation.
+inline bool HasImplicitReflectionMode(std::string_view type,std::string_view key,Property property){
+    return type=="MeshRenderer"&&key=="Reflection mode"&&*std::get<int*>(property)==int(ReflectionMode::Precise);
+}
 // Both clipboard copies and prefabs keep registered values without runtime handles.
 struct ComponentSnapshot {
     std::string type,data;
@@ -73,7 +91,10 @@ struct ComponentSnapshot {
     static ComponentSnapshot Capture(ComponentType& type,Component& component) {
         RICE_BENCHMARK_FUNCTION();
         std::ostringstream output;output<<std::setprecision(9);
-        type.fields(component,[&](const char*,Property property){WriteProperty(output,property);output<<'\n';});
+        type.fields(component,[&](const char* key,Property property){
+            if(HasImplicitReflectionMode(type.name,key,property))return;
+            WriteProperty(output,property);output<<'\n';
+        });
         return {type.name,output.str()};
     }
     static std::vector<ComponentSnapshot> CaptureAll(GameObject& object,ComponentRegistry& registry) {
@@ -91,6 +112,10 @@ struct ComponentSnapshot {
             if(!type)throw std::runtime_error("Component is not registered: "+value.type);
             auto& component=type->add(object);std::istringstream input(value.data);
             type->fields(component,[&](const char* key,Property property){
+                if(type->name=="MeshRenderer"&&std::string_view(key)=="Reflection mode"){
+                    if(!input.eof())input>>std::ws;
+                    if(input.eof()){*std::get<int*>(property)=int(ReflectionMode::Precise);return;}
+                }
                 if(std::string_view(key)=="Cast shadows"){
                     if(!input.eof())input>>std::ws;
                     if(input.eof()){*std::get<bool*>(property)=true;return;}
@@ -117,7 +142,7 @@ struct ComponentSnapshot {
             });
             input>>std::ws;
             if(!input.eof())throw std::runtime_error("Unexpected component properties: "+value.type);
-            if(auto* mesh=object.GetComponent<MeshRenderer>())mesh->triangleMaterials.Validate(mesh->custom.indices.size()/3);
+            if(auto* mesh=object.GetComponent<MeshRenderer>())mesh->ValidateSettings();
         }
     }
     static void Restore(GameObject& object,const std::vector<ComponentSnapshot>& values,ComponentRegistry& registry) {
@@ -149,7 +174,7 @@ public:
             size_t attached=0,registered=0;obj->EachComponent([&](Component&){ RICE_BENCHMARK_FUNCTION(); ++attached;});for(auto& t:registry.types)if(t.get(*obj))++registered;if(attached!=registered)throw std::runtime_error("Register custom component fields before saving/playing");
             out<<"Object "<<obj->GetID()<<' '<<(obj->GetParent()?obj->GetParent()->GetID():0)<<' '<<std::quoted(obj->name)<<' '<<obj->activeSelf<<' ';
             WriteProperty(out,&obj->transform.position);WriteProperty(out,&obj->transform.rotation);WriteProperty(out,&obj->transform.localScale);out<<obj->isGroup<<' '<<(obj->GetGroup()?obj->GetGroup()->GetID():0)<<' '<<obj->previousGroup<<' ';WriteMatrix(out,obj->transform.affine);WriteMatrix(out,obj->groupOffset);WriteMatrix(out,obj->groupParentBind);WriteMatrix(out,obj->groupCommonBind);WriteProperty(out,&obj->transform.pivot);out<<'\n';
-            for(auto& type:registry.types)if(auto* c=type.get(*obj)){out<<"Component "<<std::quoted(type.name)<<'\n';type.fields(*c,[&](const char* key,Property p){ RICE_BENCHMARK_FUNCTION(); out<<std::quoted(key)<<' ';WriteProperty(out,p);out<<'\n';});out<<"EndComponent\n";}
+            for(auto& type:registry.types)if(auto* c=type.get(*obj)){out<<"Component "<<std::quoted(type.name)<<'\n';type.fields(*c,[&](const char* key,Property p){ RICE_BENCHMARK_FUNCTION(); if(HasImplicitReflectionMode(type.name,key,p))return;out<<std::quoted(key)<<' ';WriteProperty(out,p);out<<'\n';});out<<"EndComponent\n";}
             out<<"EndObject\n";
         }out<<"EndScene\n";return out.str();}
     Scope<Scene> Decode(const std::string& text){ RICE_BENCHMARK_FUNCTION(); if(text.size()>16*1024*1024)throw std::runtime_error("Scene exceeds 16 MiB");std::istringstream in(text);Expect(in,"RICE_SCENE");int version=0;in>>version;if(version<1||version>5)throw std::runtime_error("Unsupported scene version");auto result=CreateScope<Scene>();std::vector<std::pair<EntityID,EntityID>> parents,groups;
@@ -163,7 +188,13 @@ public:
         std::string token;while(in>>token){if(token=="EndScene")break;
             if(token=="EditorGrid"&&version>=5&&!gridRead&&result->GetObjectCount()==0){ReadProperty(in,&result->settings.axes);ReadProperty(in,&result->settings.grids);gridRead=true;continue;}if(token!="Object")throw std::runtime_error("Expected Object");EntityID id=0,parent=0;std::string name;bool active=true;in>>id>>parent>>std::quoted(name)>>active;if(!in||id==0||id==UINT64_MAX||result->GetObjectCount()>=10000)throw std::runtime_error("Invalid entity");auto& obj=result->CreateGameObject(name,id);obj.activeSelf=active;ReadProperty(in,&obj.transform.position);ReadProperty(in,&obj.transform.rotation);ReadProperty(in,&obj.transform.localScale);if(version>=2){EntityID group=0;in>>obj.isGroup>>group>>obj.previousGroup;ReadMatrix(in,obj.transform.affine);ReadMatrix(in,obj.groupOffset);ReadMatrix(in,obj.groupParentBind);ReadMatrix(in,obj.groupCommonBind);groups.push_back({id,group});}parents.push_back({id,parent});std::set<std::string> found;
             if(version>=4)ReadProperty(in,&obj.transform.pivot);
-            while(in>>token){if(token=="EndObject")break;if(token!="Component")throw std::runtime_error("Expected Component");std::string typeName;in>>std::quoted(typeName);auto* type=registry.Find(typeName);if(!type||!found.insert(typeName).second)throw std::runtime_error("Unknown/duplicate component: "+typeName);auto& c=type->add(obj);type->fields(c,[&](const char* key,Property p){ RICE_BENCHMARK_FUNCTION(); if(version<3&&typeName=="Light"&&(std::string(key)=="Type"||std::string(key)=="Range"))return;
+            while(in>>token){
+                if(token=="EndObject")break;
+                if(token!="Component")throw std::runtime_error("Expected Component");
+                std::string typeName;in>>std::quoted(typeName);
+                auto* type=registry.Find(typeName);
+                if(!type||!found.insert(type->name).second)throw std::runtime_error("Unknown/duplicate component: "+typeName);
+                auto& c=type->add(obj);type->fields(c,[&](const char* key,Property p){ RICE_BENCHMARK_FUNCTION(); if(version<3&&typeName=="Light"&&(std::string(key)=="Type"||std::string(key)=="Range"))return;
                 if(typeName=="MeshRenderer" && (std::string_view(key)=="Shape"||std::string_view(key)=="Custom mesh"||std::string_view(key)=="Shape asset"||std::string_view(key)=="Triangle materials")){
                     auto position=in.tellg();
                     std::string next;
@@ -171,23 +202,24 @@ public:
                     if(!in)throw std::runtime_error("Truncated MeshRenderer");
                     in.seekg(position);
                     // Scenes saved before basic shapes contain only Enabled and Color.
-                    if(next=="EndComponent"||next=="Cast shadows"||(std::string_view(key)=="Shape"&&next=="Custom mesh")||(std::string_view(key)=="Custom mesh"&&next=="Shape asset")||(std::string_view(key)=="Shape asset"&&next=="Triangle materials"))return;
+                    if(next=="EndComponent"||next=="Cast shadows"||next=="Reflection mode"||(std::string_view(key)=="Shape"&&next=="Custom mesh")||(std::string_view(key)=="Custom mesh"&&next=="Shape asset")||(std::string_view(key)=="Shape asset"&&next=="Triangle materials"))return;
                 }
                 if(dynamic_cast<ScriptComponentBase*>(&c)&&std::holds_alternative<std::string*>(p)){
                     auto position=in.tellg();std::string next;in>>std::quoted(next);
                     if(!in)throw std::runtime_error("Truncated script component");
                     in.seekg(position);if(next!=key)return;
                 }
-                if(std::string_view(key)=="Cast shadows"){
+                if(std::string_view(key)=="Cast shadows"||(typeName=="MeshRenderer"&&std::string_view(key)=="Reflection mode")){
                     auto position=in.tellg();std::string next;in>>std::quoted(next);
-                    if(!in)throw std::runtime_error("Truncated shadow setting");
-                    in.seekg(position);if(next=="EndComponent")return;
+                    if(!in)throw std::runtime_error("Truncated render setting");
+                    in.seekg(position);
+                    if(next=="EndComponent"||(typeName=="MeshRenderer"&&std::string_view(key)=="Cast shadows"&&next=="Reflection mode"))return;
                 }
                 Expect(in,key);ReadProperty(in,p);});Expect(in,"EndComponent");}if(token!="EndObject")throw std::runtime_error("Truncated object");
             // Older transforms used the mesh origin. Adopt the centered pivot
             // without moving existing, possibly deformed, scene geometry.
             if(version<4){auto pivot=obj.GetLocalPivot();obj.transform.position+=Vector3(obj.transform.GetMatrix()*Vector4(pivot,0))-pivot;}
-            if(auto* mesh=obj.GetComponent<MeshRenderer>())mesh->triangleMaterials.Validate(mesh->custom.indices.size()/3);
+            if(auto* mesh=obj.GetComponent<MeshRenderer>())mesh->ValidateSettings();
         }if(token!="EndScene")throw std::runtime_error("Truncated scene");in>>std::ws;if(!in.eof())throw std::runtime_error("Trailing scene data");
         for(auto [id,parent]:parents)if(parent){auto* target=result->Find(parent);if(!target)throw std::runtime_error("Missing parent");result->Find(id)->SetParent(target);}
         for(auto [id,group]:groups)if(group){auto* target=result->Find(group);if(!target)throw std::runtime_error("Missing group");auto* obj=result->Find(id);auto offset=obj->groupOffset,bind=obj->groupParentBind,common=obj->groupCommonBind;obj->SetGroup(target,false);obj->groupOffset=offset;obj->groupParentBind=bind;obj->groupCommonBind=common;}return result;

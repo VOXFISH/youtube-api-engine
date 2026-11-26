@@ -2,7 +2,6 @@
     // and calls carry the whole selection, including after a source-only import.
     struct StrategyMethod {
         std::string qualified, signature;
-        std::vector<std::string> parameters;
     };
     static std::vector<StrategyMethod> StrategyMethods(const Doc& doc) {
         std::vector<StrategyMethod> methods;
@@ -12,15 +11,9 @@
             if (!klass || klass->kind != Kind::Class || klass->parent) continue;
             StrategyMethod method;
             method.qualified = klass->name + "::" + function.name;
-            method.parameters = Arguments(function.args);
             std::vector<std::string> types{function.type.empty() ? "void" : function.type};
-            for (auto argument : method.parameters) {
-                auto equals = argument.find('=');
-                if (equals != std::string::npos) argument.resize(equals);
-                argument = Trim(std::move(argument));
-                auto name = argument.find_last_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
-                types.push_back(name == std::string::npos ? argument : Trim(argument.substr(0,name+1)));
-            }
+            for (const auto& parameter : Scripting::FunctionParameters(function.args))
+                types.push_back(parameter.type);
             method.signature = "StrategySlot<" + Join(types) + ">";
             methods.push_back(std::move(method));
         }
@@ -92,7 +85,7 @@
         std::erase_if(type, [](unsigned char c){ return std::isspace(c); });
         return type;
     }
-    bool StrategyFields(View& view, Node& n, bool& edited) {
+    bool StrategyFields(Workspace& w, Entry& e, View& view, Targets& targets, Node& n, bool& edited) {
         if (IsStrategy(n)) {
             ImGui::Text("Signature: %s",n.type.c_str());
             edited=TextField("Name",n.name);
@@ -115,16 +108,23 @@
             ImGui::EndCombo();
         }
         if (line.action==StrategyAction::Invoke) {
-            auto slot=std::find_if(view.document.Nodes().begin(),view.document.Nodes().end(),[&](auto& item){return IsStrategy(item)&&item.name==line.slot;});
+            auto slot=std::find_if(view.document.Nodes().begin(),view.document.Nodes().end(),[&](const auto& item){
+                return IsStrategy(item)&&item.name==line.slot&&view.document.CanSee(item.id,n.id);
+            });
             if (slot!=view.document.Nodes().end()) {
-                auto signature=Arguments(Between(slot->type,'<','>'));
-                auto arguments=Arguments(line.argument);
-                if (!signature.empty()&&arguments.size()+1==signature.size()) {
-                    for (size_t i=0;i<arguments.size();++i) {
-                        auto label="Argument "+std::to_string(i+1)+" ("+signature[i+1]+")";
-                        if (TextField(label.c_str(),arguments[i])) {line.argument=Join(arguments);edited=true;}
+                const auto signature=Scripting::SplitArguments(Between(slot->type,'<','>'));
+                if(!signature.empty()){
+                    std::vector<Scripting::ScriptParameter> parameters;
+                    for(size_t i=1;i<signature.size();++i){
+                        Scripting::ScriptParameter parameter;
+                        parameter.declaration=parameter.type=signature[i];
+                        parameters.push_back(std::move(parameter));
                     }
-                } else edited=TextField("Arguments",line.argument);
+                    if(ArgumentFields(w,e,view,targets,n.id,"Arguments",parameters,line.argument)){
+                        line.argument=view.document.NativeExpression(std::move(line.argument),n.parent);
+                        edited=true;
+                    }
+                }else edited=TextField("Arguments",line.argument);
                 if(!signature.empty()&&signature.front()!="void"&&ImGui::BeginCombo("Output",line.output.empty()?"Discard":line.output.c_str())){
                     if(ImGui::Selectable("Discard",line.output.empty())) {line.output.clear();edited=true;}
                     for(auto& variable:view.document.Nodes()) {
@@ -168,7 +168,7 @@
                 ImGui::EndMenu();
             }
             if (ImGui::MenuItem("Call Strategy",nullptr,false,inCoroutine&&!synchronous)) {
-                auto types=Arguments(Between(slot.type,'<','>'));
+                auto types=Scripting::SplitArguments(Between(slot.type,'<','>'));
                 if (!types.empty()) types.erase(types.begin());
                 for (auto& type:types) type=DefaultValue(type);
                 newAction={StrategyAction::Invoke,slot.name,Join(types)};

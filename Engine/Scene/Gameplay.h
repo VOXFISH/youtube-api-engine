@@ -84,7 +84,9 @@ private:
             history.next.clear();
         }
     }
-    std::map<Pair,bool> previous;
+    // A compound collider can have a solid contact and a trigger contact with the same object.
+    static constexpr unsigned solidContact=1,triggerContact=2;
+    std::map<Pair,unsigned> previous;
     std::map<Pair,Generations> previousGenerations;
     float accumulator=0;
     bool broadphaseEnabled=true;
@@ -92,15 +94,15 @@ private:
     SpatialBVH broadphase;
     std::vector<SpatialBounds> bodyBounds;
     std::vector<EntityID> bodyIDs;
-    void SyncBroadphase(const std::vector<GameObject*>& bodies){
+    void SyncBroadphase(const std::vector<Collider*>& bodies){
         bool membershipChanged=bodyIDs.size()!=bodies.size(),boundsChanged=false;
         if(!membershipChanged)for(size_t i=0;i<bodies.size();++i)
-            if(bodyIDs[i]!=bodies[i]->GetID()){membershipChanged=true;break;}
+            if(bodyIDs[i]!=bodies[i]->GetGameObject().GetID()){membershipChanged=true;break;}
         bodyBounds.resize(bodies.size());bodyIDs.resize(bodies.size());
         for(size_t i=0;i<bodies.size();++i){
-            auto [low,high]=bodies[i]->GetComponent<BoxCollider>()->GetBounds();
+            auto [low,high]=bodies[i]->GetBounds();
             boundsChanged|=bodyBounds[i].low!=low||bodyBounds[i].high!=high;
-            bodyBounds[i]={low,high};bodyIDs[i]=bodies[i]->GetID();
+            bodyBounds[i]={low,high};bodyIDs[i]=bodies[i]->GetGameObject().GetID();
         }
         ++broadphaseStats.boundsRefreshes;
         if(membershipChanged){broadphase.Build(bodyBounds);++broadphaseStats.treeBuilds;}
@@ -116,33 +118,35 @@ private:
     void Step(Scene& scene,float dt){
         RICE_BENCHMARK_FUNCTION();
         for(auto& obj:scene.GetObjects())if(obj->IsActive())if(auto* r=obj->GetComponent<Rigidbody>();r&&r->enabled){if(!r->kinematic&&r->useGravity)r->velocity.y-=9.81f*dt;obj->TranslateWorld(r->velocity*dt);}
-        std::vector<GameObject*> bodies;for(auto& obj:scene.GetObjects())if(auto* c=obj->GetComponent<BoxCollider>()){c->overlapping=false;if(obj->IsActive()&&c->enabled)bodies.push_back(obj.get());}
-        std::map<Pair,bool> contacts;
+        auto bodies=ActiveColliders(scene);
+        std::map<Pair,unsigned> contacts;
         std::map<Pair,Generations> generations;
         broadphaseStats.possiblePairs+=bodies.size()*(bodies.size()-(bodies.empty()?0:1))/2;
         auto resolve=[&](size_t i,size_t j,const SpatialBounds& ab,const SpatialBounds& bb){
             ++broadphaseStats.candidatePairs;
-            auto& a=*bodies[i];auto& b=*bodies[j];auto* ca=a.GetComponent<BoxCollider>();auto* cb=b.GetComponent<BoxCollider>();
-            auto amin=ab.low,amax=ab.high,bmin=bb.low,bmax=bb.high;Vector3 depth=glm::min(amax,bmax)-glm::max(amin,bmin);
-            if(glm::any(glm::lessThan(depth,Vector3(0))))return false;
-            ca->overlapping=cb->overlapping=true;Pair pair=std::minmax(a.GetID(),b.GetID());bool trigger=ca->isTrigger||cb->isTrigger;contacts[pair]=trigger;
+            auto* ca=bodies[i];auto* cb=bodies[j];
+            auto& a=ca->GetGameObject();auto& b=cb->GetGameObject();
+            if(&a==&b)return false;
+            bool trigger=ca->isTrigger||cb->isTrigger;
+            float ia=InverseMass(a),ib=InverseMass(b);
+            auto hit=CollisionGeometry::Intersect(*ca,ab,*cb,bb,!trigger&&(ia+ib)>0);
+            if(!hit)return false;
+            ca->overlapping=cb->overlapping=true;Pair pair=std::minmax(a.GetID(),b.GetID());
+            contacts[pair]|=trigger?triggerContact:solidContact;
             generations[pair]=a.GetID()==pair.first?Generations{a.GetPoolGeneration(),b.GetPoolGeneration()}:Generations{b.GetPoolGeneration(),a.GetPoolGeneration()};
-            if(trigger)return false;
-            float ia=InverseMass(a),ib=InverseMass(b);if(ia+ib==0)return false;
-            int axis=depth.x<depth.y?0:1;if(depth.z<depth[axis])axis=2;
-            Vector3 normal(0);normal[axis]=(amin[axis]+amax[axis]<bmin[axis]+bmax[axis])?-1.f:1.f;
-            a.TranslateWorld(normal*depth[axis]*ia/(ia+ib));b.TranslateWorld(-normal*depth[axis]*ib/(ia+ib));
+            if(trigger||ia+ib==0)return false;
+            Vector3 normal=hit->normal;
+            if(ia)a.TranslateWorld(normal*hit->depth*ia/(ia+ib));
+            if(ib)b.TranslateWorld(-normal*hit->depth*ib/(ia+ib));
             auto* ra=a.GetComponent<Rigidbody>();auto* rb=b.GetComponent<Rigidbody>();
             Vector3 va=ra?ra->velocity:Vector3(0),vb=rb?rb->velocity:Vector3(0);float relative=glm::dot(va-vb,normal);
             if(relative<0){float bounce=std::max(ra?ra->restitution:0.f,rb?rb->restitution:0.f);float impulse=-(1+glm::clamp(bounce,0.f,1.f))*relative/(ia+ib);if(ia)ra->velocity+=normal*impulse*ia;if(ib)rb->velocity-=normal*impulse*ib;}
-            return depth[axis]>0.f;
+            return hit->depth>0.f;
         };
         auto resolveRemaining=[&](size_t firstI,size_t firstJ){
             for(size_t i=firstI;i<bodies.size();++i)
                 for(size_t j=i==firstI?firstJ:i+1;j<bodies.size();++j){
-                    auto [amin,amax]=bodies[i]->GetComponent<BoxCollider>()->GetBounds();
-                    auto [bmin,bmax]=bodies[j]->GetComponent<BoxCollider>()->GetBounds();
-                    resolve(i,j,{amin,amax},{bmin,bmax});
+                    resolve(i,j,ColliderBounds(*bodies[i]),ColliderBounds(*bodies[j]));
                 }
         };
         if(broadphaseEnabled){
@@ -180,8 +184,8 @@ private:
             }
         }else resolveRemaining(0,1);
         if(scene.settings.ground&&scene.settings.groundCollision){
-            for(auto* object:bodies){
-                auto* collider=object->GetComponent<BoxCollider>();auto* body=object->GetComponent<Rigidbody>();
+            for(auto* collider:bodies){
+                auto* object=&collider->GetGameObject();auto* body=object->GetComponent<Rigidbody>();
                 if(collider->isTrigger||!body||!body->enabled||body->kinematic)continue;
                 auto [low,high]=collider->GetBounds();
                 // Correcting the penetration puts a resting body exactly on y=0.
@@ -192,17 +196,24 @@ private:
                 }
             }
         }
-        for(auto& [pair,trigger]:contacts){
-            if(!scriptObservers.empty()){
-                Observe(scene,pair.first,pair.second,trigger);
-                Observe(scene,pair.second,pair.first,trigger);
-            }
+        for(auto& [pair,mask]:contacts){
             auto old=previous.find(pair);
             bool same=old!=previous.end()&&previousGenerations.at(pair)==generations.at(pair);
-            if(same&&old->second!=trigger)Notify(scene,pair,old->second,2);
-            Notify(scene,pair,trigger,same&&old->second==trigger?1:0);
+            unsigned oldMask=same?old->second:0;
+            for(auto channel:{solidContact,triggerContact})
+                if((oldMask&channel)&&!(mask&channel))Notify(scene,pair,channel==triggerContact,2);
+            for(auto channel:{solidContact,triggerContact})if(mask&channel){
+                bool trigger=channel==triggerContact;
+                if(!scriptObservers.empty()){
+                    Observe(scene,pair.first,pair.second,trigger);
+                    Observe(scene,pair.second,pair.first,trigger);
+                }
+                Notify(scene,pair,trigger,(oldMask&channel)?1:0);
+            }
         }
-        for(auto& [pair,trigger]:previous)if(!contacts.contains(pair))Notify(scene,pair,trigger,2,&previousGenerations.at(pair));
+        for(auto& [pair,mask]:previous)if(!contacts.contains(pair))
+            for(auto channel:{solidContact,triggerContact})if(mask&channel)
+                Notify(scene,pair,channel==triggerContact,2,&previousGenerations.at(pair));
         previous=std::move(contacts);
         previousGenerations=std::move(generations);
         FinishObservations(scene);

@@ -60,7 +60,7 @@ class ScriptPanel {
     }
     static std::string ComponentLabel(const std::string& type){
         if(auto kind=MonkeyScriptKind(type))return std::string("Monkey Script (")+kind+")";
-        return type;
+        return std::string(ComponentRegistry::CanonicalName(type));
     }
     static bool InScene(const Workspace& w,const Entry& entry){
         return entry.project==w.project->root&&entry.scene==w.project->ActiveScene();

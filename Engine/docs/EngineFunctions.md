@@ -56,9 +56,11 @@
 |---|---|
 | BoxCollider::center/size/isTrigger/overlapping | 로컬 중심·크기, Trigger, 마지막 검사 겹침 결과. |
 | BoxCollider::GetBounds() → pair<Vector3,Vector3> | 8개 꼭짓점의 월드 최소/최대 AABB. 음수 size는 절댓값. |
+| SphereCollider::center/radius/isTrigger/overlapping | 로컬 중심과 반지름. 기본 반지름은 0.5이고 월드 변환에서 가장 긴 축의 배율을 적용한다. |
+| PolygonCollider::center/isTrigger/overlapping | 같은 오브젝트의 MeshRenderer 삼각형으로 충돌 표면을 구성한다. center는 메시의 로컬 좌표에 더하는 오프셋이다. |
 | CollisionSystem::Update(Scene&) → size_t | 단순 겹침 쌍 수. 이벤트·반응 없는 기존 조회 API. |
-| Rigidbody::velocity/mass/restitution/useGravity/kinematic | 월드 선형 속도, 질량, 반발, 중력, 수동 이동 여부. 질량은 계산 시 최소 0.001. |
-| PhysicsSystem::Update(Scene&, dt) | 내부 1/60초 누적 스텝. 프레임당 입력 시간 최대 0.1초. 잘못된 dt는 예외. AABB 침투 보정과 반발 수행. |
+| Rigidbody::velocity/mass/restitution/useGravity/kinematic | Inspector의 Physics 컴포넌트. Body type의 Dynamic은 kinematic=false, Kinematic은 true에 대응한다. 질량은 계산 시 최소 0.001. |
+| PhysicsSystem::Update(Scene&, dt) | 내부 1/60초 누적 스텝. 프레임당 입력 시간 최대 0.1초. 잘못된 dt는 예외. 충돌 모양별 접촉 판정 후 침투와 반발을 처리한다. |
 | PhysicsSystem::Reset() | 누적 시간·이전 접촉 비우기. 씬 교체 때 필요. |
 | OnCollisionEnter/Stay/Exit(EntityID) | 일반 접촉 시작·유지·종료 콜백. 상대 삭제 후 Find는 nullptr일 수 있음. |
 | OnTriggerEnter/Stay/Exit(EntityID) | 한쪽 Collider가 Trigger인 접촉 콜백. 물리 반응 없음. |
@@ -69,7 +71,7 @@
 | InputActions::Held/Pressed/Released(name) → bool | 현재 상태 / 이번 프레임 눌림 / 해제. 없는 액션은 false. |
 | InputActions::Axis(negative,positive) → float | 양수 액션 - 음수 액션, -1/0/1. |
 
-PhysicsSystem은 상태를 가지므로 씬마다 별도 인스턴스를 사용한다. Broad phase·CCD·마찰·회전 동역학은 제공하지 않는다.
+PhysicsSystem은 상태를 가지므로 씬마다 별도 인스턴스를 사용한다. 공간 인덱스로 충돌 후보를 좁힌 뒤 고정 물리 스텝에서 접촉을 판정한다. 빠른 물체는 두 스텝 사이에 얇은 표면을 통과할 수 있다.
 
 ## FMOD — Audio/Audio.h
 
@@ -344,19 +346,21 @@ SceneRenderer는 Cube 메시의 활성 Material.albedoTexture 크기를 검사�
 
 ReflectionProbe는 Component이며 resolution, storageQuality, maxObjectSize, fixEdgeSeams를 씬과 클립보드에 보존합니다. 코드에서 AddComponent<ReflectionProbe>()로 추가합니다. storageQuality는 0=RGB8, 1=RGB16F입니다.
 
-DynamicReflection::Capture(probe, draw)는 여섯 방향의 90도 카메라로 draw 콜백을 호출하고 GPU 큐브맵의 mipmap을 생성합니다. 해상도 또는 포맷 변경 시 저장 공간을 재할당합니다. 실패 시 프레임버퍼, 뷰포트, 깊이와 시저 상태를 복원하고 예외를 전달합니다. Texture()는 GPU 큐브맵 ID, MipLevels()는 전체 mip 단계 수를 반환합니다.
+`DynamicReflection::Capture(probe, precise, draw)`는 여섯 방향의 90도 카메라로 `draw`를 호출하고 GPU 큐브맵의 mipmap을 생성합니다. `precise`는 해당 촬영 시점에 정밀 반사용 기하도 준비했는지 나타냅니다. 해상도 또는 포맷 변경 시 저장 공간을 재할당합니다. 실패 시 프레임버퍼, 뷰포트, 깊이와 시저 상태를 복원하고 예외를 전달합니다. `Texture()`는 GPU 큐브맵 ID, `MipLevels()`는 전체 mip 단계 수를 반환합니다.
 
-SceneRenderer::Render는 기본 호출에서 큰 수신 오브젝트가 사용하거나 저장 설정이 변경된 활성 프로브를 갱신합니다. 씬 인스턴스와 오브젝트 ID별로 큐브맵을 관리하고 삭제되거나 비활성화된 프로브의 GPU 자원을 해제합니다. 수신 오브젝트의 활성 프로브를 우선하고 자체 프로브가 없으면 가장 가까운 프로브를 선택합니다. 내부 촬영에서는 capturing=true로 재귀 촬영을 방지하고 excluded ID의 오브젝트를 제외합니다. 일반 렌더링에서 Material 메시의 프레넬 반사에 큐브맵 샘플을 더합니다. Fix up edge seams는 해당 렌더링 동안 GL_TEXTURE_CUBE_MAP_SEAMLESS를 적용하고 이전 전역 상태로 복원합니다.
+`MeshRenderer::reflectionMode`의 값은 `ReflectionMode::Off`(0), `Direct`(1), `Precise`(2)이며 기본값은 `Precise`입니다. `SceneRenderer::Render`는 활성 재질을 가진 가시 수신 메시마다 자체 프로브를 우선 선택하고, 없으면 가장 가까운 활성 프로브를 사용합니다. `Direct`는 표면 반사 방향으로 큐브맵을 샘플링하고, `Precise`는 반사상의 위치를 보정합니다. 두 모드 모두 거칠기에 따른 mip 단계와 프레넬을 적용합니다. `Off` 메시도 다른 프로브의 촬영에는 참여할 수 있습니다. 내부 촬영에서는 `capturing=true`로 재귀 촬영을 방지하고 `excluded` ID의 오브젝트를 제외합니다.
 
-ReflectionProbe::maxObjectSize는 화면 픽셀 단위이며 새 프로브 기본값은 100입니다. ReflectionPixelSize(world, viewProjection, viewport, low, high)는 로컬 경계상자를 near/far 평면으로 잘라 투영한 뒤 뷰포트에 제한하고 너비와 높이 중 큰 픽셀 수를 반환합니다. SceneRenderer는 실제 GL 뷰포트 크기를 사용해 해당 값 미만인 메시에는 flatReflection을 적용하고 기준 이상에는 표면별 동적 반사를 적용합니다. 저장 필드 이름은 Max object size를 유지합니다.
+`ReflectionProbe::maxObjectSize`의 기본값은 100px이며 저장 필드 이름은 `Max object size`입니다. `ReflectionPixelSize(world, viewProjection, viewport, low, high)`는 near/far 평면과 뷰포트로 자른 메시 경계의 너비와 높이 중 큰 픽셀 수를 반환합니다. 기준 미만인 `Precise` 기본 도형은 카메라 쪽을 향한 대표 면으로 픽셀별 반사 위치를 계산합니다. 커스텀 메시는 표면 법선을 사용합니다.
 
-작은 수신 메시의 flatReflection은 카메라 방향에 가장 잘 정렬된 월드 면을 대표 평면으로 선택합니다. 각 화면 픽셀의 시선을 그 평면에 교차시키고 반사 방향 및 프레넬을 계산합니다. 프로브의 모든 수신 메시가 기준 미만이면 촬영을 생략합니다. DynamicReflection::SettingsChanged는 첫 촬영과 해상도·포맷 변경을 판정해 초기화되지 않은 큐브맵 사용을 방지합니다. 큰 수신 메시가 하나라도 있으면 공유 프로브의 촬영을 계속합니다.
+프로브를 사용하는 가시 수신 메시가 하나라도 기준 이상이면 큐브맵을 갱신합니다. 작은 메시만 보이면 마지막 촬영을 재사용할 수 있습니다. `DynamicReflection::SettingsChanged(probe, precise)`는 첫 촬영, 해상도·포맷 변경, 정밀 기하가 없는 촬영본에 정밀 수신 메시가 추가된 경우를 검출합니다. 조명·그림자 버전이 바뀔 때도 촬영을 갱신합니다. 씬 인스턴스와 오브젝트 ID별로 큐브맵을 관리하고 삭제되거나 비활성화된 프로브의 GPU 자원을 해제합니다. Fix up edge seams는 해당 렌더링 동안 `GL_TEXTURE_CUBE_MAP_SEAMLESS`를 적용하고 이전 전역 상태로 복원합니다.
 
 
 ## 반사상 위치와 크기 보정
 
-DynamicReflection::SetGeometry(records, owners)는 캡처 당시 장면의 역월드 행렬과 기본 도형 종류 및 소유자 인덱스를 RGBA32F 텍스처 버퍼에 저장합니다. GeometryTexture(), GeometryCount(), ReceiverIndex(id)는 셰이더 입력을 반환하며 CapturePosition()은 마지막 촬영 위치를 반환합니다. 큐브맵과 기하 스냅샷은 같은 시점에 갱신합니다. 한 도형당 vec4 다섯 개를 사용하고 GPU의 GL_MAX_TEXTURE_BUFFER_SIZE를 검사합니다.
+`DynamicReflection::SetGeometry(groups, payload, owners)`는 정밀 반사를 받는 메시가 보일 때 큐브맵과 같은 시점의 기하를 `RGBA32F` 텍스처 버퍼에 올립니다. 메시 또는 스프라이트당 헤더 3텍셀에 소유자 인덱스, 도형 종류, 데이터 길이와 월드 경계 상자를 저장합니다. 헤더 배열 뒤에는 기본 도형의 역월드 행렬(4텍셀) 또는 커스텀 메시의 월드 정점(삼각형당 3텍셀)이 이어집니다. 삼각형이 64개 이상인 커스텀 메시에는 BVH 노드 데이터도 포함합니다. 업로드 전에 전체 텍셀 수를 `GL_MAX_TEXTURE_BUFFER_SIZE`와 비교합니다. `GeometryTexture()`는 버퍼 텍스처 ID, `GeometryGroupCount()`는 그룹 수, `ReceiverIndex(id)`는 해당 오브젝트의 첫 그룹 인덱스 또는 −1, `CapturePosition()`은 마지막 촬영 위치를 반환합니다.
 
-ReflectionIntersectionGLSL의 correctedReflectionDirection(origin, direction)은 월드 반사선을 각 도형의 로컬 좌표로 옮겨 가장 가까운 교차점을 구하고, 마지막 프로브 촬영 위치에서 해당 교차점으로 향하는 큐브맵 방향을 반환합니다. 로컬 방향을 정규화하지 않아 비균일 스케일과 shear에서도 거리 비교가 일관됩니다. 수신 오브젝트와 촬영 제외 오브젝트는 교차 후보에서 제외하고 교차점이 없으면 0 벡터를 반환해 잘못된 방향성 잔상을 방지합니다.
+`ReflectionIntersectionGLSL`의 `correctedReflectionDirection(origin, direction)`은 수신 오브젝트와 프로브 자체를 제외하고 월드 반사선이 통과하는 경계 상자를 찾습니다. 해당 상자 안의 커스텀 삼각형은 월드 좌표에서 검사하고, 기본 도형은 반사선을 로컬 좌표로 옮겨 교차점을 계산합니다. 이때 로컬 반사 방향의 길이를 유지하므로 비균일 스케일과 전단 변환이 걸린 도형의 교차 거리도 비교할 수 있습니다. 가장 가까운 교차점이 있으면 마지막 프로브 촬영 위치에서 그 지점으로 향하는 방향을, 없으면 0 벡터를 반환합니다.
+
+큰 커스텀 메시는 `MeshRenderer::Intersection()`에 캐시된 삼각형 BVH를 재사용합니다. CPU는 가장 긴 축의 중앙값에서 삼각형을 분할해 리프 하나에 최대 8개를 배치합니다. GPU용 노드당 2텍셀에 월드 경계 상자, 하위 트리를 건너뛸 거리, 리프의 삼각형 수를 담습니다. 셰이더는 별도 스택 없이 반사선과 만나는 노드만 내려가고, 리프에서 원본 삼각형과 교차하는 가장 가까운 점을 구합니다.
 
 도형별 교차는 단위 박스, XY 원/사각형, 구, Y축 원기둥과 원뿔을 사용합니다. 곡면은 해석적 도형으로 계산하므로 렌더링 메시의 세분화 경계와 소폭 차이가 날 수 있습니다. 촬영 시점의 가림과 투명 이미지의 alpha cutout은 교차 기하에 포함되지 않아 해당 부분은 큐브맵 근사로 남습니다.

@@ -27,6 +27,19 @@ struct ShapeMesh {
     std::vector<MeshFaceGroup> faceGroups;
     std::vector<Vector3> normals; // Empty, or one per corner. A zero entry uses the geometric face normal.
 
+    ShapeMesh()=default;
+    ShapeMesh(const ShapeMesh&)=default;
+    ShapeMesh(ShapeMesh&&) noexcept=default;
+    // Replacing a mesh invalidates caches on its owner even when both meshes have the same revision.
+    ShapeMesh& operator=(ShapeMesh replacement) noexcept {
+        positions.swap(replacement.positions);
+        indices.swap(replacement.indices);
+        uv.swap(replacement.uv);
+        faceGroups.swap(replacement.faceGroups);
+        normals.swap(replacement.normals);
+        ++revision;
+        return *this;
+    }
     bool operator==(const ShapeMesh& other)const {
         return positions==other.positions&&indices==other.indices&&uv==other.uv&&faceGroups==other.faceGroups&&normals==other.normals;
     }
@@ -122,7 +135,7 @@ struct ShapeMesh {
             }
         }
         if(!in)throw std::runtime_error("Truncated custom mesh");
-        next.Validate();next.revision=revision+1;*this=std::move(next);
+        next.Validate();*this=std::move(next);
     }
     static ShapeMesh FromPrimitive(BasicShape shape){
         RICE_BENCHMARK_FUNCTION();

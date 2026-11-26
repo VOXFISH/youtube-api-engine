@@ -20,6 +20,7 @@ class MeshIntersection {
         });
     }
 public:
+    const SpatialBVH& Hierarchy() const{return tree;}
     void Rebuild(const ShapeMesh& mesh){
         RICE_BENCHMARK_FUNCTION();
         triangles.clear();triangles.reserve(mesh.indices.size()/3);

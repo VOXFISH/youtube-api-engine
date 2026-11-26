@@ -25,6 +25,11 @@ std::string Source(int step) {
             return id;
         };
         document.Add(0,NodeKind::Variable,"score");
+        const auto addAmount=document.Add(0,NodeKind::Function,"AddAmount");
+        auto function=*document.Get(addAmount);
+        function.type="int";function.args="int current, int increment";
+        Check(document.Edit(addAmount,function),"Could not declare a two-parameter script function");
+        value(addAmount,NodeKind::EndFunction,{},"current + increment");
         auto inventory=document.Add(0,NodeKind::Variable,"inventory");
         auto field=*document.Get(inventory);
         field.type="std::unordered_map<int, int>";field.value="{{2, 7}}";
@@ -46,7 +51,7 @@ std::string Source(int step) {
     }();
     auto document=base.first;
     auto increment=*document.Get(base.second);
-    increment.value="score + "+std::to_string(step);
+    increment.value="AddAmount(score, AddAmount(0, "+std::to_string(step)+"))";
     Check(document.Edit(increment.id,increment),"Could not change increment");
     return document.Source();
 }

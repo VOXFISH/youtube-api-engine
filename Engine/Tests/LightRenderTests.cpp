@@ -5,6 +5,7 @@
 #include "Renderer/PerspectiveCamera.h"
 #include "Renderer/RenderCommand.h"
 #include "Project/SceneCodec.h"
+#include <array>
 #include <iostream>
 using namespace Rice;
 void Check(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
@@ -110,6 +111,102 @@ public:
     uint32_t GetWidth()const override{return 1;}uint32_t GetHeight()const override{return 1;}
     void Bind(uint32_t slot)const override{glActiveTexture(GL_TEXTURE0+slot);glBindTexture(GL_TEXTURE_2D,texture);}
 };
+static void CheckReflectionModes(SceneRenderer& renderer,ViewportTarget& target){
+    Scene scene;
+    scene.settings.skybox=true;
+    scene.skyboxTexture=CreateRef<TestSkyTexture>();
+    auto& probeObject=scene.CreateGameObject("Shared probe");
+    probeObject.transform.position={0,0,1};
+    auto& probe=probeObject.AddComponent<ReflectionProbe>();
+    probe.resolution=256;
+    probe.maxObjectSize=5000;
+    auto receiver=[&](const char* name,float x)->GameObject&{
+        auto& object=scene.CreateGameObject(name);
+        object.transform.position.x=x;
+        auto& mesh=object.AddComponent<MeshRenderer>();
+        mesh.shape=int(BasicShape::Rectangle);
+        mesh.color=Color(1);
+        mesh.reflectionMode=int(ReflectionMode::Direct);
+        auto& material=object.AddComponent<Material>();
+        material.metallicity=1;material.roughness=0;
+        return object;
+    };
+    auto& left=receiver("Left mirror",-.8f);
+    auto& right=receiver("Right mirror",.8f);
+    auto& marker=scene.CreateGameObject("Red marker");
+    auto& source=marker.AddComponent<MeshRenderer>();
+    source.shape=int(BasicShape::Custom);
+    // A planar 2,048-triangle mesh with a local origin outside its bounds.
+    // Different points on the mirror send rays into different BVH leaves.
+    constexpr uint32_t cells=32,stride=cells+1;
+    for(uint32_t y=0;y<=cells;++y)for(uint32_t x=0;x<=cells;++x)
+        source.custom.positions.emplace_back(2.5f+float(x)/cells,-.5f+float(y)/cells,0);
+    for(uint32_t y=0;y<cells;++y)for(uint32_t x=0;x<cells;++x){
+        uint32_t a=y*stride+x,b=a+1,c=a+stride,d=c+1;
+        source.custom.indices.insert(source.custom.indices.end(),{a,b,d,a,d,c});
+    }
+    source.custom.uv.resize(source.custom.indices.size(),Vector2(0));
+    source.custom.Touch();
+    source.color={1,0,0,1};
+    source.reflectionMode=int(ReflectionMode::Off);
+    marker.AddComponent<Material>();
+    marker.transform.localScale={.85f,1.2f,1};
+    marker.transform.rotation.z=20;
+    marker.TranslateWorld(Vector3(1.92f,0,7)-marker.GetWorldPivot());
+
+    // At X=0.8 the reflected ray reaches X=1.92 on the marker plane. A parallel
+    // ray sampled from the probe reaches X=0.96 and sees the blue sky instead.
+    constexpr int size=128;
+    PerspectiveCamera camera(45,1,.1f,100);
+    camera.SetPosition({0,0,5});camera.LookAtObj({0,0,0});
+    using Pixel=std::array<unsigned char,4>;
+    auto sample=[&]{
+        std::array<Vector3,4> points{left.GetWorldPivot(),right.GetWorldPivot(),
+            right.GetWorldPivot()+Vector3(.1f,.08f,0),right.GetWorldPivot()-Vector3(.1f,.08f,0)};
+        std::array<Pixel,4> pixels{};
+        target.Render(size,size,[&]{
+            renderer.Render(scene,camera);
+            for(size_t i=0;i<pixels.size();++i){
+                auto clip=camera.GetVPMatrix()*Vector4(points[i],1);
+                auto pixel=(Vector2(clip)/clip.w+1.f)*(.5f*size);
+                glReadPixels(int(pixel.x),int(pixel.y),1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixels[i].data());
+            }
+        });
+        return pixels;
+    };
+    auto direct=sample();
+    Check(direct[0][2]>direct[0][0]+80&&direct[1][2]>direct[1][0]+80,"Direct receivers sample the sky from the shared cubemap");
+    Check(renderer.GetSpatialStats().reflectionGeometryUploads==0,"A direct-only probe skips the intersection geometry upload");
+    right.GetComponent<MeshRenderer>()->reflectionMode=int(ReflectionMode::Precise);
+    auto mixed=sample();
+    Check(renderer.GetSpatialStats().reflectionGeometryUploads==1,"A cached direct probe uploads geometry for its first precise receiver");
+    Check(mixed[0]==direct[0]&&std::all_of(mixed.begin()+1,mixed.end(),[](const Pixel& pixel){return pixel[0]>pixel[2]+20;}),
+          "Precise rays hit different parts of the transformed grid while a direct receiver still samples the sky");
+    right.GetComponent<MeshRenderer>()->reflectionMode=int(ReflectionMode::Off);
+    auto off=sample();
+    Check(off[0]==direct[0]&&mixed[1][0]>off[1][0]+20&&direct[1][2]>off[1][2]+80,
+          "Off disables receiving; an Off marker is still captured and visible in the precise reflection");
+
+    ComponentRegistry registry;SceneCodec codec(registry);
+    auto encoded=codec.Encode(scene);
+    auto restored=codec.Decode(encoded);
+    Check(restored->Find(left.GetID())->GetComponent<MeshRenderer>()->reflectionMode==int(ReflectionMode::Direct)&&
+          restored->Find(right.GetID())->GetComponent<MeshRenderer>()->reflectionMode==int(ReflectionMode::Off),
+          "Reflection modes survive scene roundtrip");
+    std::istringstream lines(encoded);std::ostringstream legacy;std::string line;
+    while(std::getline(lines,line))if(!line.starts_with("\"Reflection mode\""))legacy<<line<<'\n';
+    auto old=codec.Decode(legacy.str());
+    Check(old->Find(left.GetID())->GetComponent<MeshRenderer>()->reflectionMode==int(ReflectionMode::Precise),
+          "A scene with no reflection mode retains precise reflections");
+    auto snapshot=ComponentSnapshot::Capture(*registry.Find("MeshRenderer"),*left.GetComponent<MeshRenderer>());
+    auto& copy=scene.CreateGameObject("Snapshot copy");
+    ComponentSnapshot::Apply(copy,{snapshot},registry);
+    Check(copy.GetComponent<MeshRenderer>()->reflectionMode==int(ReflectionMode::Direct),"Mesh snapshots preserve the receiver mode");
+    snapshot.data.erase(snapshot.data.rfind('\n',snapshot.data.size()-2)+1);
+    ComponentSnapshot::Apply(copy,{snapshot},registry);
+    Check(copy.GetComponent<MeshRenderer>()->reflectionMode==int(ReflectionMode::Precise),
+          "A legacy snapshot restores the default mode on an existing mesh");
+}
 static void CheckEnvironment(SceneRenderer& renderer,ViewportTarget& target){
     Scene scene;PerspectiveCamera camera(50,1,.1f,1000);camera.SetPosition({4,3,5});camera.LookAtObj({0,0,0});
     auto image=[&](bool guides=false){std::vector<unsigned char> pixels(96*96*4);target.Render(96,96,[&]{renderer.Render(scene,camera,false,0,guides);glReadPixels(0,0,96,96,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());});return pixels;};
@@ -309,6 +406,7 @@ int main(int argc,char** argv){GLFWwindow* window=nullptr;try{
                   savedProbe->maxObjectSize==64 && !savedProbe->fixEdgeSeams,"Reflection settings survive scene roundtrip");
         }
         CheckEnvironment(renderer,target);
+        CheckReflectionModes(renderer,target);
         CheckReflectionImageGeometry(renderer,target);
         Check(glGetError()==GL_NO_ERROR,"Reflection geometry rendering completes without GL errors");
         std::cout<<"Lighting render regression passed; near="<<near<<", behind="<<behind<<'\n';

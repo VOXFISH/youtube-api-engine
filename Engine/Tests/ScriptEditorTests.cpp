@@ -18,6 +18,126 @@ static void EditValue(ScriptEditingSession& session,ScriptView& view,ScriptId id
     session.Changed(view,id);
 }
 struct ScriptPanelTestAccess {
+    static void ArgumentInputs(Workspace& workspace){
+        ScriptPanel panel;
+        ScriptPanel::Entry entry;
+        entry.Reset(ScriptDocument::New());
+        auto& doc=entry.main.document;
+        auto start=First(doc,NodeKind::Start);
+        doc.Add(0,NodeKind::Variable,"score");
+        auto function=doc.Add(0,NodeKind::Function,"Blend");
+        auto definition=*doc.Get(function);
+        definition.type="int";definition.args="int leftSample, int rightSample";
+        Check(doc.Edit(function,definition),"Could not set up the two-parameter function");
+        auto wait=doc.Add(start,NodeKind::Wait);
+        auto row=*doc.Get(wait);row.value="score";doc.Edit(wait,row);
+        auto strategy=doc.Add(0,NodeKind::Variable,"movement");
+        auto slot=*doc.Get(strategy);slot.type="StrategySlot<void, int, int>";slot.value="{}";doc.Edit(strategy,slot);
+        auto invoke=doc.Add(start,NodeKind::Custom);
+        auto native=*doc.Get(invoke);native.value="co_await movement.Invoke(5);";doc.Edit(invoke,native);
+
+        auto target=wait;
+        std::string visible;
+        auto frame=[&]{
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize({620,500});
+            ImGui::Begin("Argument input test",nullptr,ImGuiWindowFlags_NoSavedSettings);
+            ImGui::LogToBuffer();
+            auto line=*doc.Get(target);
+            if(panel.ItemFields(workspace,entry,entry.main,entry.targets,line))panel.MarkEdit(entry,entry.main,line);
+            visible=ImGui::GetCurrentContext()->LogBuffer.c_str();
+            ImGui::LogFinish();ImGui::End();ImGui::Render();
+        };
+        auto inputFor=[&](const std::string& initial){
+            for(const auto& [id,buffer]:panel.buffers)if(buffer.model==initial)return id;
+            throw std::runtime_error("Missing argument input for "+initial);
+        };
+        auto enter=[&](ImGuiID id,const char* text){
+            ImGui::ActivateItemByID(id);frame();
+            Check(ImGui::GetActiveID()==id,"An argument field can receive keyboard input");
+            auto& io=ImGui::GetIO();
+            io.AddInputCharactersUTF8(text);frame();
+            io.AddKeyEvent(ImGuiKey_Enter,true);frame();
+            io.AddKeyEvent(ImGuiKey_Enter,false);frame();
+        };
+        frame();frame();
+        const auto expression=inputFor("score");
+        enter(expression,"Blend");
+        Check(visible.find("leftSample")!=visible.npos&&visible.find("rightSample")!=visible.npos,
+              "Typing a function name shows a field for each declared parameter");
+        auto initialized=*doc.Get(wait);initialized.value="Blend(10, 20)";doc.Edit(wait,initialized);frame();
+        enter(inputFor("20"),"score");
+        ScriptDocument reopened;reopened.SetSource(doc.Source());
+        auto call=ParseScriptCall(reopened.Get(wait)->value);
+        Check(call&&call->name=="Blend"&&SplitArguments(call->arguments)==std::vector<std::string>{"10","score"},
+              "Editing the second argument preserves the first argument and survives reopening");
+        enter(expression,"score");
+        Check(doc.Get(wait)->value=="score"&&visible.find("leftSample")==visible.npos&&visible.find("rightSample")==visible.npos,
+              "Replacing a call with a scalar variable removes its parameter fields");
+
+        target=doc.Add(start,NodeKind::Call,"Blend");
+        auto direct=*doc.Get(target);direct.args="3";doc.Edit(target,direct);frame();
+        definition=*doc.Get(function);definition.args="int leftSample, int rightSample, float bias = 1";
+        doc.Edit(function,definition);frame();
+        Check(visible.find("bias")!=visible.npos&&visible.find("rightSample")!=visible.npos&&doc.Get(target)->args=="3",
+              "Adding a declared parameter expands an existing Call Function row without rewriting supplied arguments");
+        definition=*doc.Get(function);definition.args="int leftSample";
+        doc.Edit(function,definition);frame();
+        Check(visible.find("leftSample")!=visible.npos&&visible.find("rightSample")==visible.npos&&
+              visible.find("bias")==visible.npos&&doc.Get(target)->args=="3",
+              "Removing parameters shrinks the Call Function row and leaves its first argument intact");
+
+        target=doc.Add(start,NodeKind::Variable,"offset");
+        auto vector=*doc.Get(target);vector.type="Vec3";vector.value="Vec3{1, 2, 3}";doc.Edit(target,vector);
+        panel.buffers.clear();frame();
+        enter(inputFor("2"),"score");
+        reopened.SetSource(doc.Source());
+        auto coordinates=ParseVectorInitializer(reopened.Get(target)->value,"Vec3");
+        Check(coordinates&&SplitArguments(coordinates->arguments)==std::vector<std::string>{"1","score","3"},
+              "Each component of a vector variable accepts an expression and preserves the other coordinates");
+        target=doc.Add(start,NodeKind::Change,"score");
+        panel.buffers.clear();frame();
+        const auto targetName=inputFor("score");
+        enter(targetName,"offset");
+        auto savedVector=[&](const char* type){
+            reopened.SetSource(doc.Source());
+            auto value=ParseVectorInitializer(reopened.Get(target)->value,type);
+            Check(value.has_value(),"Retargeting saves a native vector constructor");
+            return SplitArguments(value->arguments);
+        };
+        Check(doc.Get(target)->name=="offset"&&visible.find("Z")!=visible.npos&&
+              savedVector("Vec3")==std::vector<std::string>{"0","0","0"},
+              "Typing a Vec3 target converts the default scalar into a three-coordinate value");
+        enter(targetName,"score");
+        Check(doc.Get(target)->name=="score"&&doc.Get(target)->value=="0"&&visible.find("Z")==visible.npos,
+              "Typing a scalar target restores a single value field");
+        auto planar=doc.Add(start,NodeKind::Variable,"planar");
+        auto pair=*doc.Get(planar);pair.type="Vec2";pair.value="{}";doc.Edit(planar,pair);
+        auto assignment=*doc.Get(target);assignment.value="7";doc.Edit(target,assignment);frame();
+        enter(targetName,"planar");
+        Check(savedVector("Vec2")==std::vector<std::string>{"7","0"},"Nonzero scalar survives as X of a Vec2");
+        assignment=*doc.Get(target);assignment.value="Vec2{7, 8}";doc.Edit(target,assignment);frame();
+        enter(targetName,"offset");
+        Check(savedVector("Vec3")==std::vector<std::string>{"7","8","0"},"Vec2 to Vec3 retains X and Y and initializes Z");
+        enter(targetName,"score");
+        reopened.SetSource(doc.Source());
+        Check(reopened.Get(target)->value=="7","Switching a constructed vector to a scalar retains its X value");
+        assignment=*doc.Get(target);assignment.value="offset";doc.Edit(target,assignment);frame();
+        enter(targetName,"offset");
+        Check(doc.Get(target)->value=="offset","A compatible whole-vector expression survives a target change");
+
+        target=invoke;panel.buffers.clear();
+        const auto original=doc.Text(invoke);
+        frame();frame();
+        Check(panel.buffers.size()==2&&doc.Text(invoke)==original,
+              "Opening a short native strategy call shows both inputs and preserves its source");
+        const auto first=inputFor("5");
+        const auto other=std::find_if(panel.buffers.begin(),panel.buffers.end(),[&](const auto& item){return item.first!=first;});
+        enter(other->first,"score");
+        reopened.SetSource(doc.Source());
+        Check(SplitArguments(panel.ParseStrategy(*reopened.Get(invoke)).argument)==std::vector<std::string>{"5","score"},
+              "Filling the missing strategy argument keeps the existing native argument");
+    }
     static void ExternalMoveCoordinates(){
         ScriptDocument disk=ScriptDocument::New();
         auto update=First(disk,NodeKind::Update);
@@ -117,6 +237,7 @@ struct ScriptPanelTestAccess {
         io.AddKeyEvent(ImGuiKey_Enter,true);frame();
         io.AddKeyEvent(ImGuiKey_Enter,false);frame();
         Check(main.open&&!main.findOpen&&main.selected==otherCall,"Arrow navigation and Enter did not return focus to the selected instance");
+        ArgumentInputs(workspace);
         ImGui::DestroyContext();
 
         auto source=workspace.project->assets.Root()/"test-script.cpp";

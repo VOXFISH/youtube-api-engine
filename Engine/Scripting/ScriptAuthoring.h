@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,19 @@ struct ScriptChildReference {
     std::size_t line = 1;
 };
 
+struct ScriptParameter {
+    std::string declaration, name, type, defaultValue;
+};
+struct ScriptCallExpression {
+    std::string name, arguments;
+    // Byte offsets into the original expression, excluding the parentheses.
+    std::size_t argumentsBegin = std::string::npos, argumentsEnd = std::string::npos;
+};
+std::vector<ScriptParameter> FunctionParameters(std::string_view declarations);
+std::vector<std::string> SplitArguments(std::string_view arguments);
+std::optional<ScriptCallExpression> ParseScriptCall(std::string_view expression);
+std::optional<ScriptCallExpression> ParseVectorInitializer(std::string_view expression, std::string_view type);
+
 // All source ranges are measured in bytes in the authoritative UTF-8 C++ file.
 // Unrecognized C++ has a range too; a structured edit only rewrites its own item.
 class ScriptDocument {
@@ -66,6 +80,10 @@ public:
     bool Erase(ScriptId id);
     bool Move(ScriptId id, int direction);
     bool CanSee(ScriptId symbol, ScriptId owner) const;
+    const ScriptNode* FindVisibleFunction(std::string_view name, ScriptId owner, ScriptId preferred = 0) const;
+    std::string VisibleVariableType(std::string_view name, ScriptId owner, ScriptId preferred = 0) const;
+    bool CanAwait(ScriptId owner) const;
+    std::string NativeExpression(std::string text, ScriptId owner) const;
     bool CanRead(ScriptId variable) const;
     std::vector<ScriptId> Instances(ScriptId symbol, ScriptId window = 0) const;
     std::vector<ScriptDiagnostic> Validate(const std::vector<std::string_view>& otherSources = {}) const;

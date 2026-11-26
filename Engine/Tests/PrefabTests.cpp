@@ -51,7 +51,14 @@ void HierarchyAndReuse(const fs::path& directory) {
     root.AddComponent<Material>().albedoAsset="preserved-grass-asset";
     auto& child=source.CreateGameObject("child");child.SetParent(&outside);child.transform.position={-2,1,4};child.SetGroup(&root);
     child.AddComponent<Light>().enabled=false;
+    auto& polygon=child.AddComponent<PolygonCollider>();polygon.center={1,2,-3};polygon.isTrigger=true;
+    child.AddComponent<MeshRenderer>().shape=int(BasicShape::Cone);
     auto& leaf=source.CreateGameObject("leaf");leaf.SetParent(&child);leaf.transform.position={1,0,0};leaf.AddComponent<Rigidbody>().mass=9;
+    auto& sphere=leaf.AddComponent<SphereCollider>();sphere.center={0,-.25f,1};sphere.radius=1.75f;sphere.enabled=false;
+    SceneCodec codec(registry);auto savedScene=codec.Encode(source);
+    Check(savedScene.find("Component \"Polygon Collider\"")!=std::string::npos&&savedScene.find("Component \"Sphere Collider\"")!=std::string::npos,
+          "Both collider names are written to the scene");
+    Check(codec.Encode(*codec.Decode(savedScene))==savedScene,"Scene round-trip retains both collider shapes and settings");
     auto rootWorld=root.GetWorldMatrix(),childWorld=child.GetWorldMatrix(),leafWorld=leaf.GetWorldMatrix();
     const auto originalAwake=Probe::awakened;
     auto path=library.Save(source,root.GetID(),"Hierarchy");
@@ -59,6 +66,11 @@ void HierarchyAndReuse(const fs::path& directory) {
     Check(Probe::awakened==originalAwake,"Saving captures values without constructing script instances");
     library.Clear();auto asset=library.Load("Hierarchy");
     Check(asset->ObjectCount()==3,"Only selected root and descendants captured");
+    auto oldPrefab=asset->Encode();
+    auto typeAt=oldPrefab.find("\"Physics\"");
+    Check(typeAt!=std::string::npos,"Prefab writes the Physics component name");
+    oldPrefab.replace(typeAt,std::string("\"Physics\"").size(),"\"Rigidbody\"");
+    Check(PrefabAsset::Decode(oldPrefab,registry)->Encode()==asset->Encode(),"Legacy prefab upgrades its Physics name and preserves every field");
     Reject([&]{library.Save(source,root.GetID(),"../escape");},"Prefab path traversal rejected");
     Reject([&]{PrefabAsset::Decode(ReadFile(path)+"garbage",registry);},"Trailing prefab data rejected");
 
@@ -82,6 +94,12 @@ void HierarchyAndReuse(const fs::path& directory) {
     auto expectedLeaf=leafWorld;expectedLeaf[3]+=Vector4(delta,0);
     Check(Near(copiedChild->GetWorldMatrix(),expectedChild)&&copiedLeaf&&Near(copiedLeaf->GetWorldMatrix(),expectedLeaf),"Subtree world transforms preserved");
     Check(!copiedChild->GetComponent<Light>()->enabled&&copiedLeaf->GetComponent<Rigidbody>()->mass==9,"Child component properties preserved");
+    auto* copiedPolygon=copiedChild->GetComponent<PolygonCollider>();
+    auto* copiedSphere=copiedLeaf->GetComponent<SphereCollider>();
+    Check(copiedPolygon&&copiedPolygon->isTrigger&&copiedPolygon->center==polygon.center&&copiedChild->GetComponent<MeshRenderer>()->shape==int(BasicShape::Cone),
+          "PolygonCollider and its source mesh survive saving and instantiating a prefab");
+    Check(copiedSphere&&!copiedSphere->enabled&&copiedSphere->center==sphere.center&&copiedSphere->radius==sphere.radius,
+          "SphereCollider offset, radius and enabled state survive prefab persistence");
     runtime.Update(0);const auto startCount=Probe::started;const auto disableCount=Probe::disabledCalls;
     component->value=-1;component->transient=19;instance.name="edited";instance.transform.position={99,99,99};
     instance.AddComponent<RuntimeOnly>();

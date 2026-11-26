@@ -45,7 +45,7 @@ inline float ReflectionPixelSize(const Matrix4& world,const Matrix4& viewProject
         }
         if(!clipped){include(a);include(b);}
     }
-    if(!visible)return 0.f;
+    if(!visible||glm::any(glm::lessThanEqual(maximum,minimum)))return 0.f;
     auto pixels=(maximum-minimum)*glm::max(viewport,Vector2(0))*.5f;
     return std::max(pixels.x,pixels.y);
 }
@@ -56,6 +56,7 @@ class DynamicReflection {
     Vector3 capturePosition{0};
     int allocatedResolution=0, allocatedQuality=-1;
     int requestedResolution=0,requestedQuality=-1;
+    bool capturedWithGeometry=false;
     class CaptureCamera : public PerspectiveCamera {
         Matrix4 view, vp;
     public:
@@ -84,18 +85,19 @@ public:
     int MipLevels()const{ RICE_BENCHMARK_FUNCTION(); return allocatedResolution?int(std::log2(allocatedResolution))+1:0;}
     GLuint Texture()const{ RICE_BENCHMARK_FUNCTION(); return texture;}
     GLuint GeometryTexture()const{ RICE_BENCHMARK_FUNCTION(); return geometryTexture;}
-    int GeometryCount()const{ RICE_BENCHMARK_FUNCTION(); return static_cast<int>(geometryOwners.size());}
+    int GeometryGroupCount()const{ RICE_BENCHMARK_FUNCTION(); return static_cast<int>(geometryOwners.size());}
     const Vector3& CapturePosition()const{ RICE_BENCHMARK_FUNCTION(); return capturePosition;}
     int ReceiverIndex(EntityID id)const{
         RICE_BENCHMARK_FUNCTION();
         auto found=std::find(geometryOwners.begin(),geometryOwners.end(),id);
         return found==geometryOwners.end()?-1:static_cast<int>(found-geometryOwners.begin());
     }
-    void SetGeometry(const std::vector<Vector4>& records,const std::vector<EntityID>& owners){
+    void SetGeometry(const std::vector<Vector4>& groups,const std::vector<Vector4>& payload,const std::vector<EntityID>& owners){
         RICE_BENCHMARK_FUNCTION();
         GLint limit=0;
         glGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE,&limit);
-        if(records.size()>static_cast<size_t>(limit))throw std::runtime_error("Reflection geometry exceeds GPU texture buffer capacity");
+        const size_t texels=groups.size()+payload.size();
+        if(texels>static_cast<size_t>(limit))throw std::runtime_error("Reflection geometry exceeds GPU texture buffer capacity");
         GLint oldActive,oldTexture,oldBuffer;
         glGetIntegerv(GL_ACTIVE_TEXTURE,&oldActive);
         glActiveTexture(GL_TEXTURE2);
@@ -103,20 +105,21 @@ public:
         glGetIntegerv(GL_TEXTURE_BUFFER_BINDING,&oldBuffer);
         if(!geometryBuffer){glGenBuffers(1,&geometryBuffer);glGenTextures(1,&geometryTexture);}
         glBindBuffer(GL_TEXTURE_BUFFER,geometryBuffer);
-        Vector4 empty(0);
-        glBufferData(GL_TEXTURE_BUFFER,std::max(records.size(),size_t(1))*sizeof(Vector4),
-                     records.empty()?&empty:records.data(),GL_DYNAMIC_DRAW);
+        glBufferData(GL_TEXTURE_BUFFER,std::max(texels,size_t(1))*sizeof(Vector4),nullptr,GL_DYNAMIC_DRAW);
+        if(!groups.empty())glBufferSubData(GL_TEXTURE_BUFFER,0,groups.size()*sizeof(Vector4),groups.data());
+        if(!payload.empty())glBufferSubData(GL_TEXTURE_BUFFER,groups.size()*sizeof(Vector4),payload.size()*sizeof(Vector4),payload.data());
         glBindTexture(GL_TEXTURE_BUFFER,geometryTexture);
         glTexBuffer(GL_TEXTURE_BUFFER,GL_RGBA32F,geometryBuffer);
         glBindBuffer(GL_TEXTURE_BUFFER,oldBuffer);
         glBindTexture(GL_TEXTURE_BUFFER,oldTexture);glActiveTexture(oldActive);
         geometryOwners=owners;
     }
-    bool SettingsChanged(const ReflectionProbe& probe)const{
+    bool SettingsChanged(const ReflectionProbe& probe,bool precise)const{
         RICE_BENCHMARK_FUNCTION();
-        return !texture || requestedResolution!=probe.resolution || requestedQuality!=probe.storageQuality;
+        return !texture || requestedResolution!=probe.resolution || requestedQuality!=probe.storageQuality ||
+               (precise&&!capturedWithGeometry);
     }
-    void Capture(ReflectionProbe& probe,const std::function<void(const Camera&)>& draw){
+    void Capture(ReflectionProbe& probe,bool precise,const std::function<void(const Camera&)>& draw){
         RICE_BENCHMARK_FUNCTION();
         GLint hardwareLimit=0;
         glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE,&hardwareLimit);
@@ -177,6 +180,7 @@ public:
             glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
             requestedResolution=probe.resolution;requestedQuality=probe.storageQuality;
             capturePosition=position;
+            capturedWithGeometry=precise;
             restore();
         }catch(...){restore();throw;}
     }

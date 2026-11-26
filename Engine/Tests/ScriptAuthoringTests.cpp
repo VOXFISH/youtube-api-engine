@@ -16,8 +16,32 @@ bool Has(const ScriptDocument& d,std::string text,bool warn=false){
     for(const auto& issue:d.Validate())if(issue.warning==warn&&issue.message.find(text)!=std::string::npos)return true;
     return false;
 }
+void CheckParameterSlots(){
+    auto parameters=FunctionParameters("int count, const std::unordered_map<int, float>& weights, float scale = Factor(2, 3)");
+    Check(parameters.size()==3&&parameters[0].name=="count"&&parameters[1].name=="weights"&&
+          parameters[2].name=="scale"&&parameters[2].defaultValue=="Factor(2, 3)",
+          "Parameter fields follow native names and defaults, including nested commas");
+    Check(FunctionParameters("").empty()&&FunctionParameters("void").empty(),"A parameterless function has no argument fields");
+
+    const std::vector<std::string> values={"left < right","Lookup<int, float>(a, b)","Vec3{1, 2, 3}",R"("red,green")"};
+    auto parsed=ParseScriptCall(R"(Mix(left < right, Lookup<int, float>(a, b), Vec3{1, 2, 3}, "red,green"))");
+    Check(parsed&&parsed->name=="Mix"&&SplitArguments(parsed->arguments)==values,
+          "Editing a call preserves comparisons, nested calls, initializers and string literals in their own fields");
+    Check(SplitArguments(", score,")==std::vector<std::string>{"","score",""},
+          "Partially filled calls retain positional gaps");
+    Check(!ParseScriptCall("Mix(1, 2) + offset"),"An arbitrary C++ expression remains a free-form expression");
+
+    auto doc=ScriptDocument::New();
+    auto start=Find(doc,NodeKind::Start),klass=doc.Add(0,NodeKind::Class,"Motion");
+    auto method=doc.Add(klass,NodeKind::Function,"LocalStep");
+    auto global=doc.Add(0,NodeKind::Function,"GlobalStep");
+    auto visible=doc.FindVisibleFunction("GlobalStep",start);
+    Check(visible&&visible->id==global&&!doc.FindVisibleFunction("LocalStep",start)&&doc.FindVisibleFunction("LocalStep",method),
+          "Only functions visible at the edited row supply argument fields");
+}
 }
 int main(int argc,char** argv){try{
+    CheckParameterSlots();
     auto doc=ScriptDocument::New();
     auto start=Find(doc,NodeKind::Start),update=Find(doc,NodeKind::Update);
     Check(start&&update&&doc.Nodes().size()==2,"Lifecycle rows are editable, compiler glue stays hidden");

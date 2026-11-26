@@ -131,6 +131,31 @@ private:
         RICE_BENCHMARK_FUNCTION();
         DrawProperty(label,property,[&]{BeginObjectEdit(w,object.GetID());});
     }
+    static void DrawPhysicsProperty(const char* label,Property property,const BeforeEditorEdit& beforeEdit){
+        if(std::string_view(label)=="Kinematic"){
+            // The existing scene and prefab flag stores the two mutually exclusive body types.
+            auto& kinematic=*std::get<bool*>(property);
+            EditValue(kinematic,beforeEdit,[](bool& next){
+                int index=next?1:0;
+                if(!ImGui::Combo("Body type",&index,"Dynamic\0Kinematic\0"))return false;
+                next=index==1;
+                return true;
+            });
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Dynamic responds to gravity and collision impulses.\nKinematic moves using Velocity or scripts.");
+            return;
+        }
+        DrawProperty(label,property,beforeEdit);
+        if(!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip|ImGuiHoveredFlags_AllowWhenDisabled))return;
+        static constexpr std::pair<std::string_view,const char*> descriptions[]{
+            {"Enabled","Turn physics simulation on or off for this object."},
+            {"Velocity","Movement along the world X, Y and Z axes, in units per game second."},
+            {"Mass","Heavier objects change speed less when hit by the same impulse."},
+            {"Restitution","Controls how much this object bounces on impact, from 0 to 1."},
+            {"Gravity","Accelerate a Dynamic body downward along the world Y axis."}
+        };
+        for(auto [field,description]:descriptions)if(field==label){ImGui::SetTooltip("%s",description);return;}
+    }
     void SyncMaterialPrompt(Workspace& w){
         RICE_BENCHMARK_FUNCTION();
         // Undo/Redo now preserve the Scene instance. A proposal still belongs
@@ -528,7 +553,7 @@ private:
         if(MonkeyScriptKind(name)||name=="PlayerController"||name=="YouTube Listener")return "Scripts";
         if(name=="MeshRenderer"||name=="SpriteRenderer"||name=="Material"||name=="Light"||name=="ReflectionProbe")return "Rendering";
         if(name=="Camera"||name=="Camera Follower")return "Camera";
-        if(name=="BoxCollider"||name=="Rigidbody")return "Physics";
+        if(name=="Physics"||name=="BoxCollider"||name=="Polygon Collider"||name=="Sphere Collider")return "Physics";
         if(name=="UIText"||name=="UIButton")return "UI";
         if(name=="AudioSource")return "Audio";
         if(name=="SpriteAnimator")return "Animation";
@@ -938,7 +963,12 @@ public:
                         else if(type.name=="Camera Follower")DrawCameraFollowerFields(*obj->GetComponent<CameraFollower>(),*w.editor.scene,obj->GetID(),beforeEdit);
                         else type.fields(*component,[&](const char* name,Property p){
                             RICE_BENCHMARK_FUNCTION();
-                            if(type.name=="Light"&&std::string(name)=="Type")EditValue(obj->GetComponent<Light>()->type,beforeEdit,[](int& next){return ImGui::Combo("Type",&next,"Point\0Directional\0");});
+                            if(type.name=="Physics")DrawPhysicsProperty(name,p,beforeEdit);
+                            else if(type.name=="Sphere Collider"&&std::string_view(name)=="Radius")
+                                EditValue(*std::get<float*>(p),beforeEdit,[&](float& next){
+                                    return ImGui::DragFloat(name,&next,.02f,0.f,std::numeric_limits<float>::max()/2,"%.3f",ImGuiSliderFlags_AlwaysClamp);
+                                });
+                            else if(type.name=="Light"&&std::string(name)=="Type")EditValue(obj->GetComponent<Light>()->type,beforeEdit,[](int& next){return ImGui::Combo("Type",&next,"Point\0Directional\0");});
                             else if(type.name=="MeshRenderer" && std::string_view(name)=="Shape"){
                                 auto* mesh=obj->GetComponent<MeshRenderer>();int next=mesh->shape;
                                 if(ImGui::Combo("Shape",&next,"Cube\0Circle\0Rectangle\0Sphere\0Cylinder\0Cone\0Custom\0")){beforeEdit();mesh->SetShape(next);}
@@ -947,6 +977,10 @@ public:
                                     if(ImGui::Button("Open Shape Editor")){auto id=obj->GetID();pendingObjectAction=[this,&w,id]{shapeEditor.Open(w.editor,id,w.project->assets.Root());};}
                                     ImGui::EndDisabled();
                                 }
+                            }
+                            else if(type.name=="MeshRenderer"&&std::string_view(name)=="Reflection mode"){
+                                EditValue(*std::get<int*>(p),beforeEdit,[&](int& next){return ImGui::Combo(name,&next,"Off\0Direct cubemap\0Precise\0");});
+                                ImGui::SetItemTooltip("Controls reflections on this mesh. Other probes can still capture it in all three modes.");
                             }
                             else if(type.name=="Material" && std::holds_alternative<float*>(p))
                                 EditValue(*std::get<float*>(p),beforeEdit,[&](float& next){return ImGui::SliderFloat(name,&next,0.f,1.f,"%.3f",ImGuiSliderFlags_AlwaysClamp);});
@@ -983,7 +1017,15 @@ public:
                         });
                         if(type.name=="SpriteRenderer")AssetPicker(w,"Choose image",obj->GetComponent<SpriteRenderer>()->asset,beforeEdit);
                         if(type.name=="AudioSource") {auto& source=*obj->GetComponent<AudioSource>();AssetPicker(w,"Choose audio",source.clip,beforeEdit);if(ImGui::Button("Play audio"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); w.PlayAudio(source);});ImGui::SameLine();if(ImGui::Button("Pause"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); source.Pause(true);});ImGui::SameLine();if(ImGui::Button("Resume"))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); source.Pause(false);});ImGui::SameLine();if(ImGui::Button("Stop audio"))source.Stop();}
-                        if(type.name=="BoxCollider")ImGui::Text("Overlap: %s",obj->GetComponent<BoxCollider>()->overlapping?"Yes":"No");
+                        if(type.name=="Polygon Collider"){
+                            auto* source=obj->GetComponent<MeshRenderer>();
+                            if(!source)ImGui::TextWrapped("Add a MeshRenderer to this object to generate its collider.");
+                            else if(!source->HasGeometry())
+                                ImGui::TextWrapped("Assign a mesh with triangles to this object's MeshRenderer.");
+                            else ImGui::TextDisabled("Generated from this object's MeshRenderer.");
+                        }
+                        if(auto* collider=dynamic_cast<Collider*>(component))
+                            ImGui::Text("Overlap: %s",collider->overlapping?"Yes":"No");
 
                     }
                     if(type.get(*obj)&&(type.name!="Material"||!materialPrompt.Pending(*w.editor.scene,*obj)))ComponentFooter(w,*obj,type.name);

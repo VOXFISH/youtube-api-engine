@@ -29,7 +29,9 @@ struct SpatialBounds {
 // Shared longest-axis median BVH, extracted from MeshIntersection. Leaves keep
 // source indices so clients can retain their own submission/contact ordering.
 class SpatialBVH {
+public:
     struct Node { SpatialBounds bounds; int left=-1,right=-1; size_t begin=0,end=0; };
+private:
     std::vector<SpatialBounds> bounds;
     std::vector<size_t> order;
     std::vector<Node> nodes;
@@ -109,6 +111,8 @@ public:
     }
     size_t Size() const{return bounds.size();}
     size_t NodeCount() const{return nodes.size();}
+    const Node& GetNode(int index) const{return nodes[index];}
+    size_t PrimitiveIndex(size_t index) const{return order[index];}
     template<class Predicate,class Callback>
     void Query(Predicate intersects,Callback visit) const {if(!nodes.empty())QueryNode(0,intersects,visit);}
     template<class Callback>

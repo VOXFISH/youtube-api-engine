@@ -19,6 +19,12 @@ int main(int argc,char** argv){try{
     root.AddComponent<UIButton>().action="Quit";
     root.AddComponent<PlayerController>().speed=6;
     auto encoded=codec.Encode(*editor.scene);auto restored=codec.Decode(encoded);Check(codec.Encode(*restored)==encoded,"Roundtrip all properties and references");
+    const std::string physicsHeader="Component \"Physics\"";
+    auto physicsAt=encoded.find(physicsHeader);
+    Check(physicsAt!=std::string::npos,"Physics uses the new component name");
+    auto oldPhysicsScene=encoded;
+    oldPhysicsScene.replace(physicsAt,physicsHeader.size(),"Component \"Rigidbody\"");
+    Check(codec.Encode(*codec.Decode(oldPhysicsScene))==encoded,"Opening and resaving a Rigidbody scene preserves its settings as Physics");
     auto oldMeshScene=encoded;
     auto shapeLine=oldMeshScene.find("\"Shape\" 0\n");
     Check(shapeLine!=std::string::npos,"Shape field exists in new scenes");
