@@ -77,6 +77,17 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
+# Match the installed Engine/{Runtime,Assets} layout for both kinds of build tree.
+get_property(rice_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+set(rice_asset_dir "${CMAKE_BINARY_DIR}/Assets")
+if(rice_multi_config)
+    set(rice_asset_dir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Assets")
+endif()
+foreach(skybox sf sky night)
+    configure_file("Assets/Skybox/${skybox}.png" "${rice_asset_dir}/Skybox/${skybox}.png" COPYONLY)
+endforeach()
+install(DIRECTORY Assets/Skybox DESTINATION Engine/Assets)
+
 option(RICE_BUILD_SANDBOX "Build the Rice editor and standalone player" ON)
 
 add_library(RiceBuildOptions INTERFACE)

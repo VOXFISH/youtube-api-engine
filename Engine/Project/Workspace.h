@@ -5,6 +5,8 @@
 #include "Scripting/NativeScriptCompiler.h"
 #include "Scripting/ScriptHost.h"
 #include "Rice/Debug.h"
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
 #include <chrono>
 namespace Rice {
 class Workspace {
@@ -43,6 +45,7 @@ public:
         if(registerTypes)registerTypes(registry);
         actions["Increment"]=[this]{ RICE_BENCHMARK_FUNCTION(); ++score;Log("Score: "+std::to_string(score));};actions["Quit"]=[]{ RICE_BENCHMARK_FUNCTION(); };
         if(project->HasScene(project->ActiveScene()))editor.Replace(project->LoadScene(registry));
+        else project->SetDefaultSkybox(*editor.scene);
         savedScene=editor.DocumentSnapshot();
         prefabs.SetDirectory(project->root/"Prefabs",project->assets.Root()/"Prefabs");
         BindScene();
@@ -129,6 +132,7 @@ public:
         auto relative=Project::NamedScene(name);
         if(project->HasScene(relative))throw std::runtime_error("A scene with that name already exists");
         auto next=duplicate?SceneCodec(registry).Decode(SceneCodec(registry).Encode(*editor.scene)):CreateScope<Scene>();
+        if(!duplicate)project->SetDefaultSkybox(*next);
         auto saved=SceneCodec(registry).Encode(*next);
         project->SaveScene(*editor.scene,registry,relative,next.get());
         ResetRuntime();
@@ -211,7 +215,8 @@ public:
         }
         auto& scene=*editor.scene;
         auto sky=scene.settings.skybox?scene.settings.skyboxAsset:std::string{};
-        if(sky!=scene.loadedSkyboxAsset){
+        // Headless updates leave the request pending until a render context is current.
+        if(sky!=scene.loadedSkyboxAsset&&GLAD_GL_VERSION_3_3&&glfwGetCurrentContext()){
             scene.skyboxTexture.reset();scene.loadedSkyboxAsset=sky;
             try{if(!sky.empty())scene.skyboxTexture=project->assets.Texture(sky);}catch(const std::exception& error){Report(error);}
         }

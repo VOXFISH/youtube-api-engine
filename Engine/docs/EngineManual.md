@@ -437,6 +437,8 @@ Play는 물리·스크립트·애니메이션을 시작한다. 상단 Pause는 �
 
 ### Scene Settings
 
+새 프로젝트와 빈 씬은 `Assets/Skybox/sky.png`를 기본 하늘로 사용한다. **Skybox asset**에서 `sf.png`나 `night.png`로 바꿀 수 있다. 씬을 복제하면 원본의 스카이박스 선택과 활성 상태를 함께 복사한다.
+
 Hierarchy의 Scene 선택창 바로 아래에서 씬별 환경을 설정한다. Skybox 토글과 애셋 선택은 파노라마 또는 cubemap atlas 이미지를 사용한다. Default directional light는 별도의 오브젝트 없이 색상·강도·방향을 설정한다. Ground는 y=0의 연한 회색 무한 평면이며, Ground collision을 켜면 활성 Rigidbody와 비 Trigger BoxCollider를 가진 동적 물체를 지지한다. Kinematic은 기존처럼 지정한 이동을 유지한다.
 
 X/Y/Z 축과 XY/YZ/ZX grid는 각각 켜거나 끌 수 있고 Scene 뷰에만 나타난다. Game 뷰, 반사 캡처, 독립 실행 플레이어에는 표시되지 않으며, 내보낸 씬 파일에서는 EditorGrid 설정도 제외된다. 환경 설정은 씬 저장·복제·Undo/Redo·Play/Stop에 함께 반영된다.

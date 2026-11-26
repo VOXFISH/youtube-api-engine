@@ -7,6 +7,8 @@
 
 namespace Rice {
 
+std::string InstallBuiltinSkyboxes(AssetDatabase& assets);
+
 class Project {
     struct Opened {
         fs::path root, file;
@@ -99,10 +101,12 @@ class Project {
     fs::path file;
     ProjectFile data;
     std::vector<fs::path> legacyFiles;
+    std::string defaultSkybox;
 
     explicit Project(Opened opened)
         : file(std::move(opened.file)), data(std::move(opened.data)),
           legacyFiles(std::move(opened.legacyFiles)), root(std::move(opened.root)), assets(root / "Assets") {
+        defaultSkybox = InstallBuiltinSkyboxes(assets);
         if (opened.saved) input.keys = data.bindings;
         else {
             data.bindings = input.keys;
@@ -228,11 +232,17 @@ public:
             throw std::runtime_error("Choose a new or empty project folder");
         Project project(path);
         Scene empty;
+        project.SetDefaultSkybox(empty);
         ComponentRegistry registry;
         project.SaveScene(empty, registry, project.ActiveScene());
         return project.FilePath();
     }
     const fs::path& FilePath() const { return file; }
+    void SetDefaultSkybox(Scene& scene) const {
+        if (defaultSkybox.empty()) throw std::runtime_error("The default Skybox/sky.png asset is missing");
+        scene.settings.skybox = true;
+        scene.settings.skyboxAsset = defaultSkybox;
+    }
     const fs::path& ActiveScene() const { return data.activeScene; }
     bool InputBindingsChanged() const { return input.keys != data.bindings; }
     bool HasScene(const fs::path& key) const { return data.scenes.contains(key); }

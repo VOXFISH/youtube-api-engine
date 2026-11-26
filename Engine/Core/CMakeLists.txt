@@ -19,6 +19,7 @@ target_sources(
         ${PROJECT_SOURCE_DIR}/Dependencies/stb_image/StbImage.cpp
         ${PROJECT_SOURCE_DIR}/Project/FbxModel.cpp
         ${PROJECT_SOURCE_DIR}/Project/FbxImport.cpp
+        ${PROJECT_SOURCE_DIR}/Project/BuiltinSkyboxes.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS

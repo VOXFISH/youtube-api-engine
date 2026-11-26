@@ -1,4 +1,5 @@
 #include "Project/Workspace.h"
+#include <stb_image.h>
 #include <iostream>
 
 using namespace Rice;
@@ -34,6 +35,44 @@ void CheckProjectOpening(const fs::path& output){
     Check(!fs::exists(invalid/"Assets"),"Missing scene does not construct an asset database");
     Check(workspace.editor.scene.get()==scene&&workspace.project->root==originalRoot,"Failed open preserves the loaded workspace");
     Reject([&]{Project::ResolveSavedRoot(root/"Assets");},"Asset directories are not projects");
+}
+
+void CheckSkyboxAssets(const fs::path& output) {
+    const auto file=Project::CreateNew(output/(NewAssetID()+"-skyboxes"));
+    Workspace workspace(file,true);
+    auto& assets=workspace.project->assets;
+    std::map<fs::path,std::string> skyboxes;
+    for(const auto& entry:assets.Entries())
+        if(entry.path.parent_path()=="Skybox")skyboxes.emplace(entry.path.filename(),entry.id);
+    for(const auto* name:{"sf.png","sky.png","night.png"}){
+        Check(skyboxes.contains(name),"The project registers each supplied skybox");
+        const auto path=ProjectFile::Utf8(assets.Resolve(skyboxes.at(name)));
+        int width=0,height=0,channels=0;
+        auto* pixels=stbi_load(path.c_str(),&width,&height,&channels,4);
+        Check(pixels!=nullptr,"The engine's image decoder reads each supplied skybox");
+        stbi_image_free(pixels);
+        Check(DetectCubemapLayout(width,height)==CubemapLayout::HorizontalCross,"Each skybox has six square faces");
+    }
+    const auto sky=skyboxes.at("sky.png"),night=skyboxes.at("night.png");
+    auto& initial=workspace.editor.scene->settings;
+    Check(initial.skybox&&initial.skyboxAsset==sky,"A new project's saved main scene uses sky.png");
+    workspace.Update(0,true);
+    Check(workspace.editor.scene->loadedSkyboxAsset.empty()&&!workspace.editor.scene->skyboxTexture,
+          "A headless update keeps the default image pending until rendering is available");
+    initial.skybox=false;
+    initial.skyboxAsset=night;
+    workspace.Save();
+    workspace.Open(file);
+    auto keepsNight=[&]{
+        const auto& settings=workspace.editor.scene->settings;
+        return !settings.skybox&&settings.skyboxAsset==night;
+    };
+    Check(keepsNight(),"Reopening preserves the disabled skybox and selected image");
+    workspace.NewScene("Duplicate",true);
+    Check(keepsNight(),"Duplicating a scene preserves its skybox settings");
+    workspace.NewScene("Fresh");
+    const auto& fresh=workspace.editor.scene->settings;
+    Check(fresh.skybox&&fresh.skyboxAsset==sky,"Creating a blank scene selects sky.png again");
 }
 
 struct SpawnOnStart : MonoBehaviour {
@@ -72,11 +111,12 @@ void CheckFbxImport(const fs::path& output) {
     image[2]=2;image[12]=1;image[14]=1;image[16]=24;image[20]='\xff';
     AtomicWrite(sourceDir/"textures/ivory.tga",image);
     Workspace w(Project::CreateNew(output/(NewAssetID()+"-import")),true);
+    const auto initialAssetCount=w.project->assets.Entries().size();
     const auto existing=w.editor.scene->CreateGameObject("Existing").GetID();
     w.Save();
     const auto imported=w.ImportFbx(source);
     const auto asset=w.project->assets.Root()/source.filename();
-    Check(ReadFile(asset)==ReadFile(source)&&w.project->assets.Entries().size()==2,
+    Check(ReadFile(asset)==ReadFile(source)&&w.project->assets.Entries().size()==initialAssetCount+2,
           "FBX import keeps a portable copy of the original");
     Check(w.editor.selected==imported&&w.editor.scene->Find(existing)&&w.editor.scene->GetObjectCount()==4,
           "Import adds a selected model hierarchy to the current scene");
@@ -112,7 +152,7 @@ void CheckFbxImport(const fs::path& output) {
     Check(w.editor.scene->Find(pieceId)->GetComponent<MeshRenderer>()->custom.indices.size()==3&&
           w.editor.scene->Find(pieceId)->GetParent()->name=="Board","Reopening uses the saved mesh without the source file");
     auto second=w.ImportFbx(asset);
-    Check(second!=imported&&w.project->assets.Entries().size()==2,"An FBX in Assets can be instantiated again");
+    Check(second!=imported&&w.project->assets.Entries().size()==initialAssetCount+2,"An FBX in Assets can be instantiated again");
     w.editor.Undo();
     auto broken=sourceDir/"broken.fbx";
     AtomicWrite(broken,"not an FBX model");
@@ -401,6 +441,9 @@ void CheckScenesAndPrefabs(const fs::path& output) {
     fs::rename(build,moved);
     auto contents=unpacked/"Contents";fs::create_directories(contents);
     ExtractGameBundle(moved,contents);
+    const auto shippedSky=contents/"Project"/"Assets"/"Skybox"/"sky.png";
+    Check(fs::is_regular_file(shippedSky)&&ReadFile(shippedSky)==ReadFile(workspace.project->assets.Resolve(editor.scene->settings.skyboxAsset)),
+          "The relocated game carries the selected default skybox");
     Check(fs::exists(contents/"fmod.dll")&&fs::exists(contents/"RicePlayer.exe"),"Relocated build contains the runtime");
     Check(!fs::exists(contents/"editor.dll")&&fs::exists(contents/"Licenses/FFmpeg/LICENSE.txt"),"Export selects the player's DLLs and includes their notices");
     Project exportedProject(contents/"Project",true);
@@ -415,6 +458,7 @@ int main(int argc,char** argv) {
         Check(argc==2,"Expected test output directory");
         Debug::Init();
         CheckProjectOpening(argv[1]);
+        CheckSkyboxAssets(argv[1]);
         CheckFbxImport(argv[1]);
         CheckUnsavedChanges(argv[1]);
         CheckSceneSettings(argv[1]);
