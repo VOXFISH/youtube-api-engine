@@ -5,6 +5,7 @@
 #include "Scripting/NativeScriptCompiler.h"
 #include "Scripting/ScriptHost.h"
 #include "Rice/Debug.h"
+#include "Rice/Time.h"
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <chrono>
@@ -13,6 +14,7 @@ class Workspace {
     std::map<EntityID,std::string> loadedImages;
     std::set<std::string> reported;
     bool jumpHeld=false;
+    float timeScaleBeforePlay=1.f;
     uint64_t boundScene=0;
     // Keep the decoded edit representation as the baseline. Opening an older
     // on-disk format can legitimately change the spelling of serialized fields.
@@ -57,6 +59,7 @@ public:
         if(editor.playing)Benchmark::EndPlay();
         // Release native continuations while the logger, registry and physics system still exist.
         editor.scene.reset();
+        if(editor.playing)Time::timeScale=timeScaleBeforePlay;
     }
     void BindScene() {
         RICE_BENCHMARK_FUNCTION();
@@ -145,6 +148,7 @@ public:
         RICE_BENCHMARK_FUNCTION();
         if(editor.playing)return;
         ResetRuntime();
+        timeScaleBeforePlay=Time::timeScale;
         editor.Play();
         BindScene();
         try {
@@ -174,6 +178,7 @@ public:
         if(!editor.playing)return;
         ResetRuntime();
         editor.Stop();
+        Time::timeScale=timeScaleBeforePlay;
         BindScene();
         Benchmark::EndPlay();
     }
@@ -201,17 +206,18 @@ public:
         return prefabPool.Release(*editor.scene,root);
     }
     void PlayAudio(AudioSource& source){ RICE_BENCHMARK_FUNCTION(); source.Play(audio,ProjectFile::Utf8(project->assets.Resolve(source.clip)));}
-    void Update(float dt,bool captureKeyboard){
+    void Update(float realSeconds,bool captureKeyboard){
         RICE_BENCHMARK_FUNCTION();
         BindScene();
         auto begin=std::chrono::steady_clock::now();
         project->input.BeginFrame(captureKeyboard||editor.paused);
         if(editor.playing&&!editor.paused){
+            const float dt=realSeconds*Time::timeScale;
             bool jump=!captureKeyboard&&project->input.Held("Jump");
             for(auto& obj:editor.scene->GetObjects())if(obj->IsActive())if(auto* c=obj->GetComponent<PlayerController>();c&&c->enabled&&!captureKeyboard){Vector3 direction{project->input.Axis("Left","Right"),0,project->input.Axis("Forward","Backward")};if(glm::length(direction)>1)direction=glm::normalize(direction);
                 if(auto* r=obj->GetComponent<Rigidbody>();r&&r->enabled){r->velocity.x=direction.x*c->speed;r->velocity.z=direction.z*c->speed;if(jump&&!jumpHeld)r->velocity.y=5;}else obj->TranslateWorld(direction*c->speed*std::min(dt,.1f));}
             jumpHeld=jump;
-            editor.scene->Update(std::min(dt,.1f));physics.Update(*editor.scene,dt);editor.scene->LateUpdate(dt);
+            editor.scene->Update(std::min(dt,.1f),dt,realSeconds);physics.Update(*editor.scene,dt);editor.scene->LateUpdate(dt);
         }
         auto& scene=*editor.scene;
         auto sky=scene.settings.skybox?scene.settings.skyboxAsset:std::string{};

@@ -18,6 +18,27 @@ static void EditValue(ScriptEditingSession& session,ScriptView& view,ScriptId id
     session.Changed(view,id);
 }
 struct ScriptPanelTestAccess {
+    static void ExternalMoveCoordinates(){
+        ScriptDocument disk=ScriptDocument::New();
+        auto update=First(disk,NodeKind::Update);
+        auto move=disk.Add(update,NodeKind::Move);
+        ScriptEditingSession session;
+        session.Reset(disk);
+        auto window=session.Separate(update);
+        auto& detached=session.detached.at(window);
+        auto editX=[&](ScriptDocument& doc,const std::string& x){
+            auto row=*doc.Get(move);row.moveCoordinates[0]=x;
+            Check(doc.Edit(move,row),"Could not edit Move's X coordinate");
+        };
+        editX(detached.document,"2");session.Changed(detached,move);
+        editX(session.main.document,"4");session.Changed(session.main,move);
+        auto fileTime=session.main.editedAt.at(move)-std::chrono::seconds(1);
+        detached.editedAt[move]=fileTime-std::chrono::seconds(1);
+        editX(disk,"3");session.External(disk.Source(),fileTime);
+        Check(session.main.document.Get(move)->moveCoordinates[0]=="4"&&
+              detached.document.Get(move)->moveCoordinates[0]=="3"&&!detached.edits.contains(move),
+              "A coordinate-only file edit must preserve the newer main draft and replace the older detached draft");
+    }
     static void StrategyRoundTrip(){
         using Action=ScriptPanel::StrategyAction;
         ScriptDocument doc=ScriptDocument::New();
@@ -44,6 +65,7 @@ struct ScriptPanelTestAccess {
         }
     }
     static void Run(const fs::path& directory){
+        ExternalMoveCoordinates();
         StrategyRoundTrip();
         Workspace workspace(directory,true);
         auto& object=workspace.editor.scene->CreateGameObject("Owner");

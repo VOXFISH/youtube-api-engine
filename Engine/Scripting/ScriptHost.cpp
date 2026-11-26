@@ -7,6 +7,7 @@
 #include "NativeScriptCompiler.h"
 #include "ScriptRuntime.h"
 #include "ScriptAuthoring.h"
+#include "Rice/Time.h"
 #include "Project/SceneCodec.h"
 #include "Engine/Data/DataContext.h"
 
@@ -40,7 +41,7 @@ struct LoadedModule {
             auto entry = reinterpret_cast<const ModuleApi*(*)()>(GetProcAddress(library,"RiceGetScriptApi"));
             if (entry) api = entry();
         }
-        if (!api || api->abi != ModuleAbi || !api->create || !api->destroy || !api->tick || !api->read) {
+        if (!api || (api->abi != 3 && api->abi != ModuleAbi) || !api->create || !api->destroy || !api->tick || !api->read) {
             if (library) FreeLibrary(library);
             throw std::runtime_error("Could not load the saved script. Save it again with this editor.");
         }
@@ -136,6 +137,28 @@ class NativeExecution final : public ScriptExecution {
     struct BoundField { std::function<Value()> get; std::function<void(Value)> set; };
     std::map<std::string,BoundField> fields;
 
+    bool Move(double x, double y, double z, MoveUnit unit) {
+        auto& object=owner.GetGameObject();
+        auto& scene=object.GetScene();
+        double interval;
+        switch(unit) {
+            case MoveUnit::Second: interval=scene.UnscaledDeltaTime(); break;
+            case MoveUnit::GameSecond: interval=scene.GameDeltaTime(); break;
+            case MoveUnit::Frame: interval=1; break;
+            default: return false;
+        }
+        auto delta=glm::dvec3(x,y,z)*interval;
+        auto representable=[](double v){return std::isfinite(v)&&std::abs(v)<=std::numeric_limits<float>::max();};
+        if (!representable(delta.x)||!representable(delta.y)||!representable(delta.z)) return false;
+        if (delta==glm::dvec3(0)) return true;
+        const auto before=object.transform.position;
+        try { object.TranslateWorld(Vector3(delta)); }
+        catch (const std::exception&) { return false; }
+        const auto& after=object.transform.position;
+        if (std::isfinite(after.x)&&std::isfinite(after.y)&&std::isfinite(after.z)) return true;
+        object.transform.position=before;
+        return false;
+    }
     GameObject* Resolve(const char* binding) const {
         auto& origin=owner.GetGameObject();
         if (!binding || !*binding) return &origin;
@@ -253,6 +276,9 @@ public:
             if(self.session->runtimeDiagnostic)
                 self.session->runtimeDiagnostic(self.owner.scriptFile,row,message?message:"Script runtime error.");
         };
+        host.move=[](void* p,double x,double y,double z,MoveUnit unit){return static_cast<NativeExecution*>(p)->Move(x,y,z,unit);};
+        host.gameSpeed=[](void*)->float{return Time::timeScale;};
+        host.setGameSpeed=[](void*,float speed){Time::timeScale=speed;};
         host.activate=[](void* p,const char* key,const char* type,bool v){return static_cast<NativeExecution*>(p)->Activate(key,type,v);};
         host.isActive=[](void* p,const char* key,const char* type){return static_cast<NativeExecution*>(p)->IsActive(key,type);};
         host.readChild=[](void* p,const char* key,const char* name,Value* out){return out&&static_cast<NativeExecution*>(p)->ReadChild(key,name,*out);};

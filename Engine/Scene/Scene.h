@@ -339,6 +339,7 @@ class Scene {
     inline static std::atomic<uint64_t> nextInstance{1};
     uint64_t instance=nextInstance++;
     uint64_t hierarchyRevision=0;
+    float gameDeltaTime=0,unscaledDeltaTime=0;
     ComponentStorage<Component> componentStorage;
     std::unordered_map<EntityID,GameObject*> liveObjects;
     std::vector<Scope<GameObject>> objects;
@@ -500,9 +501,16 @@ public:
     }
     const auto& GetObjects() const{ RICE_BENCHMARK_FUNCTION(); return objects;}
     size_t GetObjectCount() const{ RICE_BENCHMARK_FUNCTION(); return objects.size();}
-    void Update(float dt){
+    float GameDeltaTime() const { return gameDeltaTime; }
+    float UnscaledDeltaTime() const { return unscaledDeltaTime; }
+    void Update(float dt) { Update(dt,dt,dt); }
+    void Update(float dt,float gameSeconds,float realSeconds){
         RICE_BENCHMARK_FUNCTION();
-        if(!std::isfinite(dt)||dt<0)throw std::invalid_argument("Invalid delta time");
+        if(!std::isfinite(dt)||dt<0||!std::isfinite(gameSeconds)||gameSeconds<0||
+           !std::isfinite(realSeconds)||realSeconds<0)throw std::invalid_argument("Invalid delta time");
+        // Keep both clocks stable for the entire frame, even when a script changes game speed.
+        gameDeltaTime=gameSeconds;
+        unscaledDeltaTime=realSeconds;
         VisitObjectsInOrder([&](GameObject& object){object.Update(dt);});
     }
     void LateUpdate(float dt){

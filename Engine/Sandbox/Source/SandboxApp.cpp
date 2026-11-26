@@ -169,13 +169,13 @@ private:
         playerControl=Rice::CreateScope<Rice::PlayerControl>(static_cast<GLFWwindow*>(GetWindow().GetNativeWindow()),options.controllerPipe,options.instanceId,options.windowMode);
 #endif
     }
-    void OnUpdate(Rice::Time dt) override {
+    void OnUpdate(Rice::Time) override {
         RICE_BENCHMARK_FUNCTION();
 #ifdef RICE_PLAYER
         if(playerControl->Update(*workspace)){Close();return;}
         if(playerControl->Quiesced())return;
 #endif
-        try{if(workspace)workspace->Update(dt.GetSeconds(),ImGui::GetCurrentContext()&&(ImGui::GetIO().WantTextInput
+        try{if(workspace)workspace->Update(Rice::Time::unscaledDeltaTime,ImGui::GetCurrentContext()&&(ImGui::GetIO().WantTextInput
 #ifndef RICE_PLAYER
             || inspector.CapturesGameInput()
 #endif

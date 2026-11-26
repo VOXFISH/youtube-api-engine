@@ -17,6 +17,12 @@ namespace Rice::Scripting {
 namespace {
 constexpr auto missing = std::string::npos;
 constexpr std::string_view marker = "/*rice:";
+struct MoveUnitSpelling { std::string_view label, code; };
+constexpr MoveUnitSpelling moveUnits[]{
+    {"second", "::Rice::Scripting::MoveUnit::Second"},
+    {"game second", "::Rice::Scripting::MoveUnit::GameSecond"},
+    {"frame", "::Rice::Scripting::MoveUnit::Frame"}
+};
 bool Space(char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; }
 bool Letter(char c) { return c == '_' || std::isalpha(static_cast<unsigned char>(c)) || static_cast<unsigned char>(c) >= 128; }
 bool Word(char c) { return Letter(c) || std::isdigit(static_cast<unsigned char>(c)); }
@@ -372,10 +378,23 @@ void AuthoringParser::ScanBody(std::size_t at,std::size_t limit,ScriptId parent,
             auto fn=a;
             if(v(fn)=="co_await")++fn;
             if(v(fn)=="riceOwner"&&(v(fn+1)=="."||v(fn+1)=="->"))fn+=2;
+            const bool motionBuiltin=v(fn)=="ScriptBase"&&v(fn+1)=="::"&&(v(fn+2)=="Move"||v(fn+2)=="ChangeGameSpeed");
+            if(motionBuiltin)fn+=2;
             const bool call=fn+1<semi&&Identifier(v(fn))&&v(fn+1)=="("&&t.items[fn+1].mate+1==semi;
             if(call){
                 auto args=t.Args(fn+2,t.items[fn+1].mate);
                 if(v(fn)=="Wait"&&(args.size()==1||args.size()==2)){n.kind=NodeKind::Wait;n.value=args[0];}
+                else if(motionBuiltin&&v(fn)=="Move"&&(args.size()==5||args.size()==6)){
+                    for(auto unit:moveUnits)if(args[4]==unit.code){
+                        n.kind=NodeKind::Move;n.args=unit.label;
+                        n.value=args[0]=="std::nullopt"?"":args[0];
+                        for(size_t axis=0;axis<3;++axis)n.moveCoordinates[axis]=PlainExpression(args[axis+1]);
+                        break;
+                    }
+                }
+                else if(motionBuiltin&&v(fn)=="ChangeGameSpeed"&&(args.size()==2||args.size()==3)){
+                    n.kind=NodeKind::Change;n.name=GameSpeedTarget;n.args=Unquote(args[0]);n.value=args[1];
+                }
                 else if(v(fn)=="CheckedEmplace"&&!args.empty()&&Identifier(args[0])){
                     n.kind=NodeKind::NewClass;n.name=args[0];n.value.clear();
                     if(args.size()>1&&args[1]!="*this"&&args[1]!="*riceOwner")n.args=t.Slice(fn+4,t.items[fn+1].mate);
@@ -488,7 +507,15 @@ std::string Statement(const ScriptNode& n) {
     case NodeKind::Variable:
         if(n.riceCon)return "Routed<"+n.type+"> "+n.name+"{*this, {"+Quote(std::to_string(n.id))+", "+Quote(n.name)+", "+Quote(n.riceScope)+", "+Quote(n.riceLife)+", "+Quote(n.riceAccess)+", "+Quote(n.policy)+"}, "+(n.value.empty()?n.type+"{}":n.value)+"};";
         return n.type+" "+n.name+(n.value.empty()?"{}":" = "+n.value)+";";
-    case NodeKind::Change:return n.name+" "+(n.args.empty()?"=":n.args)+" "+n.value+";";
+    case NodeKind::Change:
+        if(n.name==GameSpeedTarget)
+            return "ScriptBase::ChangeGameSpeed("+Quote(n.args.empty()?"=":n.args)+", "+n.value+", "+std::to_string(n.id)+"ULL);";
+        return n.name+" "+(n.args.empty()?"=":n.args)+" "+n.value+";";
+    case NodeKind::Move:
+        for(auto unit:moveUnits)if(n.args==unit.label)
+            return "ScriptBase::Move("+(n.value.empty()?"std::nullopt":n.value)+", "+n.moveCoordinates[0]+", "+
+                   n.moveCoordinates[1]+", "+n.moveCoordinates[2]+", "+std::string(unit.code)+", "+std::to_string(n.id)+"ULL);";
+        return {};
     case NodeKind::Call:return "co_await "+n.name+"("+n.args+");";
     case NodeKind::Activate:return "Activate("+Quote(n.name)+", "+Quote(n.type)+", "+n.value+");";
     case NodeKind::SetState:case NodeKind::ChangeState:
@@ -733,7 +760,8 @@ std::string ScriptDocument::BindOwner(const std::string& text,ScriptId owner) co
         auto tok=t.V(i-1);
         if(i>=2&&(t.V(i-2)=="."||t.V(i-2)=="::"||t.V(i-2)=="->"))continue;
         if(!Identifier(tok))continue;
-        bool field=sdk.contains(tok)||std::any_of(nodes_.begin(),nodes_.end(),[&](const auto& n){
+        bool builtin=tok=="ScriptBase"&&t.V(i)=="::"&&(t.V(i+1)=="Move"||t.V(i+1)=="ChangeGameSpeed");
+        bool field=builtin||sdk.contains(tok)||std::any_of(nodes_.begin(),nodes_.end(),[&](const auto& n){
             return !n.parent&&(n.kind==NodeKind::Variable||n.kind==NodeKind::Function)&&n.name==tok;
         });
         if(field)out.insert(t.items[i-1].from,"riceOwner->");
@@ -888,6 +916,7 @@ ScriptId ScriptDocument::Add(ScriptId parent,NodeKind kind,std::string name) {
     case NodeKind::Call:if(n.name.empty()){auto* x=visible(NodeKind::Function);n.name=x?x->name:"missingFunction";}break;
     case NodeKind::Activate:n.value="true";break;
     case NodeKind::Wait:n.value="1.0";break;
+    case NodeKind::Move:n.value="1";n.moveCoordinates={"1","0","0"};n.args="second";break;
     case NodeKind::Custom:n.value="/* Custom Code */ (void)0;";break;
     case NodeKind::State:case NodeKind::SetState:case NodeKind::ChangeState:if(n.name.empty())n.name="Mode";n.value="Idle";break;
     case NodeKind::NewClass:{
@@ -973,6 +1002,8 @@ bool ScriptDocument::Edit(ScriptId id,const ScriptNode& next){
     auto i=Index(id);if(i==missing)return false;
     auto n=next;auto old=nodes_[i];n.id=id;n.parent=old.parent;
     if(n.kind!=old.kind)return false;
+    if(n.kind==NodeKind::Move&&std::none_of(std::begin(moveUnits),std::end(moveUnits),
+        [&](auto unit){return unit.label==n.args;}))return false;
     TrackReferences(n);
     if(n.kind==NodeKind::NewClass&&(n.name!=old.name||n.type!=old.type)){
         auto storage=std::find_if(nodes_.begin(),nodes_.end(),[&](const auto& field){
@@ -985,8 +1016,9 @@ bool ScriptDocument::Edit(ScriptId id,const ScriptNode& next){
             i=Index(id);if(i==missing)return false;
         }
     }
-    if(n.kind==NodeKind::Change||n.kind==NodeKind::Condition||n.kind==NodeKind::ElseIf||n.kind==NodeKind::EndFunction||n.kind==NodeKind::Wait||n.kind==NodeKind::Activate)
+    if(n.kind==NodeKind::Change||n.kind==NodeKind::Condition||n.kind==NodeKind::ElseIf||n.kind==NodeKind::EndFunction||n.kind==NodeKind::Wait||n.kind==NodeKind::Move||n.kind==NodeKind::Activate)
         n.value=AwaitCalls(n.value,n.parent);
+    if(n.kind==NodeKind::Move)for(auto& coordinate:n.moveCoordinates)coordinate=AwaitCalls(coordinate,n.parent);
     if(n.kind==NodeKind::Call||n.kind==NodeKind::NewClass)n.args=AwaitCalls(n.args,n.parent);
     if(n.kind==NodeKind::Change&&(n.args.empty()||n.args=="="))
         for(const auto& field:nodes_)if(field.kind==NodeKind::Variable&&field.name==n.name&&field.type=="int"&&CanSee(field.id,n.parent)&&!n.value.empty()){
@@ -1161,8 +1193,10 @@ std::vector<std::string_view> References(const ScriptNode& n){
     switch(n.kind){
     case NodeKind::Variable:return {n.type,n.value};
     case NodeKind::Function:return {n.type,n.args};
-    case NodeKind::Change:case NodeKind::NewClass:return {n.name,n.value,n.args,n.type};
+    case NodeKind::Change:if(n.name==GameSpeedTarget)return {n.value}; [[fallthrough]];
+    case NodeKind::NewClass:return {n.name,n.value,n.args,n.type};
     case NodeKind::Call:return {n.name,n.args};
+    case NodeKind::Move:return {n.value,n.moveCoordinates[0],n.moveCoordinates[1],n.moveCoordinates[2]};
     case NodeKind::Wait:case NodeKind::Condition:case NodeKind::ElseIf:case NodeKind::Loop:
     case NodeKind::EndFunction:case NodeKind::Custom:case NodeKind::Activate:return {n.value};
     default:return {};
@@ -1229,7 +1263,9 @@ std::vector<ScriptDiagnostic> ScriptDocument::Validate(const std::vector<std::st
                     error("Wait duration must be a finite, non-negative number.");
             }
         }
-        if(n.kind==NodeKind::Change||n.kind==NodeKind::Call){
+        if(n.kind==NodeKind::Move&&std::any_of(n.moveCoordinates.begin(),n.moveCoordinates.end(),
+            [](const auto& coordinate){return coordinate.empty();}))error("Enter all three movement coordinates.");
+        if((n.kind==NodeKind::Change&&n.name!=GameSpeedTarget)||n.kind==NodeKind::Call){
             bool known=false;
             for(const auto& decl:nodes_)
                 if(decl.name==n.name&&decl.kind==(n.kind==NodeKind::Change?NodeKind::Variable:NodeKind::Function)&&CanSee(decl.id,n.parent)){known=true;break;}

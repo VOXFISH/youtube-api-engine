@@ -23,9 +23,10 @@
 #include <vector>
 
 namespace Rice::Scripting {
-inline constexpr std::uint32_t ModuleAbi = 3;
+inline constexpr std::uint32_t ModuleAbi = 4;
 enum class Severity : int { Info, Warning, Error };
 enum class Phase : int { Collision, Overlap, OverlapEnd };
+enum class MoveUnit : int { Second, GameSecond, Frame };
 struct Contact {
     std::uint64_t other{};
     bool isGround{}, isTrigger{};
@@ -50,6 +51,10 @@ struct Host {
     bool (*writeField)(void*, const FieldBinding*, const Value*){};
     bool (*bindField)(void*, const FieldBinding*, const Value* initial){};
     void (*diagnostic)(void*, std::uint64_t row, const char* message){};
+    // ABI 4 appends callbacks. ABI 3 modules consume the original prefix.
+    bool (*move)(void*, double x, double y, double z, MoveUnit){};
+    float (*gameSpeed)(void*){};
+    void (*setGameSpeed)(void*, float speed){};
 };
 struct ModuleApi {
     std::uint32_t abi;
@@ -163,6 +168,11 @@ class ScriptBase {
     std::map<std::string, std::string> states;
     std::deque<StateKey> changes;
     bool processing{};
+    [[noreturn]] void RowError(std::uint64_t row, const char* message) const {
+        if (row && execution && execution->host.diagnostic)
+            execution->host.diagnostic(execution->host.user,row,message);
+        throw std::invalid_argument(message);
+    }
     void UpdateStates() {
         std::vector<std::string> groups;
         for (const auto& entry : states) groups.push_back(entry.first);
@@ -193,6 +203,38 @@ public:
     }
     bool Read(const char*, Value&) const noexcept { return false; }
     float DeltaTime() const noexcept { return execution ? execution->dt : 0; }
+    void Move(std::optional<double> value, double x, double y, double z, MoveUnit unit, std::uint64_t row=0) {
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || (value && !std::isfinite(*value)))
+            RowError(row,"Move requires finite numeric inputs.");
+        if (value) {
+            // Scale before normalizing so very large and very small directions keep their orientation.
+            const double largest=std::max({std::abs(x),std::abs(y),std::abs(z)});
+            if (largest==0 || *value==0) return;
+            x/=largest; y/=largest; z/=largest;
+            const double length=std::sqrt(x*x+y*y+z*z);
+            x=(x/length)*(*value); y=(y/length)*(*value); z=(z/length)*(*value);
+        }
+        const auto& h=execution->host;
+        if (!h.move || !h.move(h.user,x,y,z,unit))
+            RowError(row,"Cannot apply Move to this transform.");
+    }
+    void ChangeGameSpeed(std::string_view operation, double operand, std::uint64_t row=0) {
+        const auto& h=execution->host;
+        if (!h.setGameSpeed || !h.gameSpeed) RowError(row,"Game Speed is unavailable.");
+        if (!std::isfinite(operand)) RowError(row,"Game Speed requires a finite number.");
+        double speed=operand;
+        if (operation!="=") {
+            const double current=h.gameSpeed(h.user);
+            if (operation=="+=") speed=current+operand;
+            else if (operation=="-=") speed=current-operand;
+            else if (operation=="*=") speed=current*operand;
+            else if (operation=="/=" && operand!=0) speed=current/operand;
+            else RowError(row,"Invalid Game Speed operation.");
+        }
+        if (!std::isfinite(speed) || speed>std::numeric_limits<float>::max())
+            RowError(row,"Game Speed exceeds the supported range.");
+        h.setGameSpeed(h.user,static_cast<float>(std::max(0.,speed)));
+    }
     void Log(Severity severity, const char* text) const {
         if (execution && execution->host.log)
             execution->host.log(execution->host.user, static_cast<int>(severity), text);
@@ -221,12 +263,8 @@ public:
         void await_resume() const noexcept {}
     };
     WaitPoint Wait(double seconds,std::uint64_t row=0) {
-        if (!std::isfinite(seconds) || seconds < 0) {
-            constexpr auto message="Wait duration must be a finite, non-negative number.";
-            if(row&&execution&&execution->host.diagnostic)
-                execution->host.diagnostic(execution->host.user,row,message);
-            throw std::invalid_argument(message);
-        }
+        if (!std::isfinite(seconds) || seconds < 0)
+            RowError(row,"Wait duration must be a finite, non-negative number.");
         return {*execution, seconds};
     }
     struct LoopPoint {

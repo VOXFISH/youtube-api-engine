@@ -13,7 +13,7 @@
         switch(k){
             case Kind::Variable:return "Variable";case Kind::Function:return "Function";
             case Kind::Class:return "Class";case Kind::Start:return "Start";case Kind::Update:return "Update";
-            case Kind::Wait:return "Wait";case Kind::Loop:return "loop";case Kind::Change:return "Change Variable";
+            case Kind::Wait:return "Wait";case Kind::Move:return "Move";case Kind::Loop:return "loop";case Kind::Change:return "Change Variable";
             case Kind::Call:return "Call Function";case Kind::Activate:return "Activate";case Kind::NewClass:return "New Class";
             case Kind::Condition:return "if";case Kind::ElseIf:return "else if";case Kind::Else:return "else";
             case Kind::EndFunction:return "End Function";case Kind::EndLoop:return "End Loop";
@@ -29,6 +29,8 @@
         std::string label=Caption(n.kind);
         switch(n.kind){
             case Kind::Change:return label+"   "+n.name+" "+n.args+" "+n.value;
+            case Kind::Move:return label+(n.value.empty()?"":" "+n.value)+" to ("+
+                n.moveCoordinates[0]+", "+n.moveCoordinates[1]+", "+n.moveCoordinates[2]+") per "+n.args;
             case Kind::Wait:return label+"   "+n.value+" s";
             case Kind::Loop:return n.value.empty()?label:label+"   "+n.value;
             case Kind::Condition:case Kind::ElseIf:return label+"   "+n.value;
@@ -46,10 +48,10 @@
         if(!added&&it->second.model!=value)it->second={value,value};
         return it->second;
     }
-    bool TextField(const char* label,std::string& value,bool multi=false){
+    bool TextField(const char* label,std::string& value,bool multi=false,const char* hint=nullptr){
         auto& buf=Buffer(label,value);
         const bool enter=multi?ImGui::InputTextMultiline(label,&buf.text,{-1,ImGui::GetTextLineHeight()*5}):
-                               ImGui::InputText(label,&buf.text,ImGuiInputTextFlags_EnterReturnsTrue);
+                               ImGui::InputTextWithHint(label,hint,&buf.text,ImGuiInputTextFlags_EnterReturnsTrue);
         if(((enter&&!multi)||ImGui::IsItemDeactivatedAfterEdit())&&value!=buf.text){
             value=buf.model=buf.text;return true;
         }
@@ -269,12 +271,19 @@
         edited|=Initializer(w,e,view,n);
         return edited;
     }
-    bool SymbolPicker(View& view,const char* label,Id at,Kind kind,std::string& name,bool allowAdd,Id& addOwner,bool onlyList=false){
+    bool SymbolPicker(View& view,const char* label,Id at,Kind kind,std::string& name,bool changeTarget,Id& addOwner,bool onlyList=false){
         bool changed=false;
         ImGui::PushID(label);
         if(ImGui::Button((name.empty()?std::string(label):name+"###select").c_str())){view.search.clear();ImGui::OpenPopup("Defined");}
         if(ImGui::BeginPopup("Defined")){
-            ImGui::SetNextItemWidth(180);ImGui::InputTextWithHint("##find","Find a declaration",&view.search);
+            ImGui::SetNextItemWidth(180);ImGui::InputTextWithHint("##find",changeTarget?"Find a target":"Find a declaration",&view.search);
+            if(changeTarget&&Match(Scripting::GameSpeedTarget,view.search)){
+                ImGui::SeparatorText("Engine");
+                if(ImGui::Selectable(Scripting::GameSpeedTarget,name==Scripting::GameSpeedTarget)){
+                    name=Scripting::GameSpeedTarget;changed=true;
+                }
+                ImGui::SetItemTooltip("Game time multiplier (1 = normal speed).");
+            }
             ImGui::SeparatorText("Defined");
             int found=0;
             for(auto& symbol:view.document.Nodes())if(symbol.kind==kind&&view.document.CanSee(symbol.id,at)&&
@@ -286,7 +295,7 @@
             }
             if(!found)ImGui::TextDisabled("no result...");
             if(onlyList&&ImGui::Selectable("None")){name.clear();changed=true;}
-            if(allowAdd&&ImGui::Selectable("Add Variable"))addOwner=ScopeOf(view.document,at);
+            if(changeTarget&&ImGui::Selectable("Add Variable"))addOwner=ScopeOf(view.document,at);
             ImGui::EndPopup();
         }
         ImGui::PopID();
@@ -542,7 +551,7 @@
         case Kind::Change:{
             ImGui::TextUnformatted("change");ImGui::SameLine();
             Id requested=std::numeric_limits<Id>::max();
-            bool valid=false;
+            bool valid=n.name==Scripting::GameSpeedTarget;
             for(auto& decl:view.document.Nodes())if(decl.kind==Kind::Variable&&decl.name==n.name&&view.document.CanSee(decl.id,n.id)){valid=true;break;}
             if(!valid)ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1,.3f,.3f,1));
             edit|=SymbolPicker(view,"add parameter",n.id,Kind::Variable,n.name,true,requested);
@@ -575,6 +584,37 @@
             break;
         }
         case Kind::Activate:return TargetPicker(w,e,targets,n);
+        case Kind::Move:{
+            const float available=std::max(1.f,ImGui::GetContentRegionAvail().x);
+            const float right=ImGui::GetCursorScreenPos().x+available;
+            const float width=std::min(available,std::clamp(available*.1f,35.f,90.f));
+            const float valueWidth=std::min(available,width*1.5f);
+            const float comboWidth=std::min(available,ImGui::CalcTextSize("game second").x+ImGui::GetFrameHeight()+2*ImGui::GetStyle().FramePadding.x);
+            auto sameLineIfFits=[&](float nextWidth){
+                if(ImGui::GetItemRectMax().x+ImGui::GetStyle().ItemSpacing.x+nextWidth<=right)ImGui::SameLine();
+            };
+            ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Move");sameLineIfFits(valueWidth);
+            ImGui::SetNextItemWidth(valueWidth);
+            edit|=TextField("##movement",n.value,false,"value");
+            ImGui::SetItemTooltip("Leave empty to use X, Y and Z as the displacement per unit.");
+            sameLineIfFits(ImGui::CalcTextSize("to").x);ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("to");
+            constexpr const char* axes[]={"X","Y","Z"};
+            for(size_t i=0;i<n.moveCoordinates.size();++i){
+                sameLineIfFits(ImGui::CalcTextSize(axes[i]).x+ImGui::GetStyle().ItemSpacing.x+width);
+                ImGui::AlignTextToFramePadding();ImGui::TextUnformatted(axes[i]);sameLineIfFits(width);
+                ImGui::SetNextItemWidth(width);
+                ImGui::PushID(axes[i]);edit|=TextField("##coordinate",n.moveCoordinates[i]);ImGui::PopID();
+            }
+            sameLineIfFits(ImGui::CalcTextSize("per").x+ImGui::GetStyle().ItemSpacing.x+comboWidth);
+            ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("per");sameLineIfFits(comboWidth);
+            ImGui::SetNextItemWidth(comboWidth);
+            if(ImGui::BeginCombo("##move unit",n.args.c_str())){
+                for(auto unit:{"second","game second","frame"})
+                    if(ImGui::Selectable(unit,n.args==unit)){n.args=unit;edit=true;}
+                ImGui::EndCombo();
+            }
+            break;
+        }
         case Kind::Loop:{ImGui::TextUnformatted("loop");ImGui::SameLine();Id unused{};
             edit|=SymbolPicker(view,"set Scope",n.id,Kind::Variable,n.value,false,unused,true);break;}
         case Kind::Wait:return Expression(w,e,view,targets,n.id,"Seconds",n.value);
@@ -670,7 +710,7 @@
         if(ImGui::MenuItem("New Function"))Add(e,view,ScopeOf(view.document,owner),Kind::Function);
         if(ImGui::MenuItem("Set Variable"))Add(e,view,ScopeOf(view.document,owner),Kind::Variable);
         StrategyMenu(e,view,owner);
-        for(auto k:{Kind::NewClass,Kind::Change,Kind::Call,Kind::Activate,Kind::Loop,Kind::Wait,Kind::Condition}){
+        for(auto k:{Kind::NewClass,Kind::Change,Kind::Call,Kind::Activate,Kind::Move,Kind::Loop,Kind::Wait,Kind::Condition}){
             if(ImGui::MenuItem(k==Kind::Loop?"Loop":k==Kind::Condition?"Condition":Caption(k)))
                 Add(e,view,owner,k);
         }

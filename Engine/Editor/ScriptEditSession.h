@@ -122,7 +122,8 @@ struct ScriptEditingSession {
         auto changed=[&](const ScriptNode& n){
             auto* old=before.Get(n.id);
             return !old||old->parent!=n.parent||old->kind!=n.kind||old->name!=n.name||old->type!=n.type||
-                   old->value!=n.value||old->args!=n.args||old->riceCon!=n.riceCon||old->isPublic!=n.isPublic||
+                   old->value!=n.value||old->args!=n.args||old->moveCoordinates!=n.moveCoordinates||
+                   old->riceCon!=n.riceCon||old->isPublic!=n.isPublic||
                    old->riceScope!=n.riceScope||old->riceLife!=n.riceLife||old->riceAccess!=n.riceAccess||
                    old->policy!=n.policy||old->references!=n.references;
         };

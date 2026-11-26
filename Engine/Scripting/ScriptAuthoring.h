@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -8,17 +9,19 @@
 
 namespace Rice::Scripting {
 using ScriptId = std::uint64_t;
+inline constexpr char GameSpeedTarget[] = "Game Speed";
 
 enum class NodeKind {
     Start, Update, Variable, Function, Class, OnCreate, OnDestroy,
     Change, Call, NewClass, Activate, Loop, Condition, ElseIf, Else, Wait,
-    EndFunction, EndLoop, Custom, SetState, ChangeState, State, OnEnter, OnUpdate, OnExit
+    EndFunction, EndLoop, Custom, SetState, ChangeState, State, OnEnter, OnUpdate, OnExit, Move
 };
 
 struct ScriptNode {
     ScriptId id = 0, parent = 0;
     NodeKind kind = NodeKind::Custom;
     std::string name, type, value, args;
+    std::array<std::string,3> moveCoordinates{};
     bool riceCon = false, isPublic = false, coroutine = true;
     std::string qualifiers;
     std::string riceScope = "build", riceLife = "game", riceAccess = "locked", policy;
