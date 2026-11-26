@@ -13,16 +13,41 @@ template<class F> void Reject(F action,const char* message) {
     try { action(); } catch(const std::exception&) { rejected=true; }
     Check(rejected,message);
 }
+void CheckNewProjectScene(const Scene& scene) {
+    std::set<std::string> layers;
+    size_t directionalLights=0;
+    for(const auto& object:scene.GetObjects()){
+        if(object->GetComponent<SceneLayer>()){
+            Check(object->isGroup&&!object->GetHierarchyParent(),"Starter layers are root groups");
+            Check(layers.insert(object->name).second,"Each starter layer occurs once");
+        }
+        if(auto* light=object->GetComponent<Light>();light&&light->type==1){
+            auto* group=object->GetGroup();
+            Check(object->name=="Directional Light"&&object->IsActive()&&light->enabled&&light->intensity>0,
+                  "The starter directional light provides light");
+            Check(group&&group->GetComponent<SceneLayer>()&&group->name=="System Layer",
+                  "The starter directional light belongs to the System Layer");
+            ++directionalLights;
+        }
+    }
+    Check(layers==std::set<std::string>{"System Layer","Layer 0","Layer 1","Layer 2"},"A new project contains all four layers");
+    const auto& settings=scene.settings;
+    Check(directionalLights==1&&!settings.directionalLight,"The starter scene has a single directional light source");
+    Check(settings.axes==Vector3(1)&&settings.grids==Vector3(0,0,1),"Only XZ grid and all three coordinate axes are visible");
+    Check(settings.ground&&settings.groundCollision,"A new project enables the ground plane and its collision");
+}
 void CheckProjectOpening(const fs::path& output){
     auto root=output/fs::path(std::u8string(u8"한글 프로젝트 ")+fs::path(NewAssetID()).u8string());Workspace workspace(root,true);
-    workspace.editor.scene->CreateGameObject("Retained");workspace.Save();
+    CheckNewProjectScene(*workspace.editor.scene);
+    const auto retained=workspace.editor.scene->CreateGameObject("Retained").GetID();workspace.Save();
     auto file=workspace.project->FilePath();
     Check(file.filename()==fs::path(root.filename()).concat(".rice"),"Project file uses its folder name");
     for(const auto* folder:{"Assets","Scripts","Prefabs","Settings","Temp"})
         Check(fs::is_directory(root/folder),"Each project has five working directories");
     Check(Project::ResolveSavedRoot(file)==fs::absolute(root),"Project manifest resolves to its folder");
     Check(Project::ResolveSavedRoot(root)==fs::absolute(root),"Project folder is accepted");
-    workspace.Open(file);Check(workspace.editor.scene->GetObjectCount()==1,"Open accepts a project manifest file");
+    workspace.Open(file);Check(workspace.editor.scene->Find(retained),"Open accepts a project manifest file");
+    CheckNewProjectScene(*workspace.editor.scene);
     auto scene=workspace.editor.scene.get();auto originalRoot=workspace.project->root;
     auto missing=output/(NewAssetID()+"-missing");
     Reject([&]{workspace.Open(missing);},"Missing project rejected");
@@ -37,9 +62,10 @@ void CheckProjectOpening(const fs::path& output){
     Reject([&]{Project::ResolveSavedRoot(root/"Assets");},"Asset directories are not projects");
 }
 
-void CheckSkyboxAssets(const fs::path& output) {
-    const auto file=Project::CreateNew(output/(NewAssetID()+"-skyboxes"));
+void CheckNewProject(const fs::path& output) {
+    const auto file=Project::CreateNew(output/(NewAssetID()+"-new-project"));
     Workspace workspace(file,true);
+    CheckNewProjectScene(*workspace.editor.scene);
     auto& assets=workspace.project->assets;
     std::map<fs::path,std::string> skyboxes;
     for(const auto& entry:assets.Entries())
@@ -59,8 +85,15 @@ void CheckSkyboxAssets(const fs::path& output) {
     workspace.Update(0,true);
     Check(workspace.editor.scene->loadedSkyboxAsset.empty()&&!workspace.editor.scene->skyboxTexture,
           "A headless update keeps the default image pending until rendering is available");
-    initial.skybox=false;
-    initial.skyboxAsset=night;
+    workspace.Play();
+    auto& live=workspace.editor.scene->CreateGameObject("Falling box");
+    live.transform.position={25,3,30};live.AddComponent<Rigidbody>();
+    auto& collider=live.AddComponent<BoxCollider>();
+    for(int i=0;i<120;++i)workspace.Update(1.f/60,true);
+    Check(std::abs(collider.GetBounds().first.y)<.001f,"A falling collider comes to rest on the starter ground during Play");
+    workspace.Stop();
+    workspace.editor.scene->settings.skybox=false;
+    workspace.editor.scene->settings.skyboxAsset=night;
     workspace.Save();
     workspace.Open(file);
     auto keepsNight=[&]{
@@ -113,12 +146,13 @@ void CheckFbxImport(const fs::path& output) {
     Workspace w(Project::CreateNew(output/(NewAssetID()+"-import")),true);
     const auto initialAssetCount=w.project->assets.Entries().size();
     const auto existing=w.editor.scene->CreateGameObject("Existing").GetID();
+    const auto existingObjects=w.editor.scene->GetObjectCount();
     w.Save();
     const auto imported=w.ImportFbx(source);
     const auto asset=w.project->assets.Root()/source.filename();
     Check(ReadFile(asset)==ReadFile(source)&&w.project->assets.Entries().size()==initialAssetCount+2,
           "FBX import keeps a portable copy of the original");
-    Check(w.editor.selected==imported&&w.editor.scene->Find(existing)&&w.editor.scene->GetObjectCount()==4,
+    Check(w.editor.selected==imported&&w.editor.scene->Find(existing)&&w.editor.scene->GetObjectCount()==existingObjects+3,
           "Import adds a selected model hierarchy to the current scene");
     Check(w.editor.UndoCount()==1&&w.HasUnsavedChanges(),"Import records one undoable edit");
     w.editor.Undo();
@@ -167,6 +201,7 @@ void CheckUnsavedChanges(const fs::path& output) {
     Check(!w.HasUnsavedChanges(),"Newly created project is clean");
     auto& object=w.editor.scene->CreateGameObject("Saved");
     auto id=object.GetID();
+    const auto editObjects=w.editor.scene->GetObjectCount();
     object.AddComponent<ObjectScript>();
     Check(w.HasUnsavedChanges(),"Direct scene changes are detected without undo history");
     w.Save();
@@ -196,7 +231,7 @@ void CheckUnsavedChanges(const fs::path& output) {
     fs::rename(root/"Temp",root/"Temp-backup");
     AtomicWrite(root/"Temp","simulate a project save error");
     Reject([&]{w.SaveBeforeClose();},"A failed close-time save reports an error");
-    Check(w.HasUnsavedChanges()&&w.editor.playing&&w.editor.paused&&w.editor.scene->GetObjectCount()==2,
+    Check(w.HasUnsavedChanges()&&w.editor.playing&&w.editor.paused&&w.editor.scene->GetObjectCount()==editObjects+1,
           "Save failures preserve edits, selection of the project, and paused playback");
     fs::remove(root/"Temp");
     fs::rename(root/"Temp-backup",root/"Temp");
@@ -204,7 +239,7 @@ void CheckUnsavedChanges(const fs::path& output) {
     Check(!w.HasUnsavedChanges()&&w.editor.playing&&w.editor.paused,"Successful close-time save preserves playback until close");
     Project disk(root,true);
     auto saved=disk.LoadScene(w.registry);
-    Check(saved->GetObjectCount()==1&&saved->Find(id)->name=="Before Play"&&disk.input.keys.at("Interact")==69&&
+    Check(saved->GetObjectCount()==editObjects&&saved->Find(id)->name=="Before Play"&&disk.input.keys.at("Interact")==69&&
           saved->Find(id)->GetComponent<ObjectScript>()->scriptFile=="Scripts/New.cpp",
           "Close-time save writes the edit document, persistent script attachment and input bindings");
     w.Stop();
@@ -224,7 +259,7 @@ void CheckUnsavedChanges(const fs::path& output) {
     Check(!w.HasUnsavedChanges(),"Switching scenes establishes the incoming saved state");
     w.editor.scene->CreateGameObject("Discard on open");
     w.Open(root);
-    Check(!w.HasUnsavedChanges()&&w.editor.scene->GetObjectCount()==1,"Opening restores the saved document");
+    Check(!w.HasUnsavedChanges()&&w.editor.scene->GetObjectCount()==editObjects,"Opening restores the saved document");
 }
 
 struct SimulationProbe : Component {
@@ -237,6 +272,7 @@ void CheckPlayback(const fs::path& output){
         registry.Register<SimulationProbe>("SimulationProbe",[](auto&,auto&){});
     });
     auto& editor=workspace.editor;
+    editor.scene->settings.ground=false; // This fixture supplies its own floor below Y=0.
     auto& moving=editor.scene->CreateGameObject("Kinematic");auto movingID=moving.GetID();
     moving.transform.position={-10,5,0};auto& body=moving.AddComponent<Rigidbody>();body.kinematic=true;body.velocity={3,0,0};
     moving.AddComponent<BoxCollider>();moving.AddComponent<SimulationProbe>();
@@ -458,7 +494,7 @@ int main(int argc,char** argv) {
         Check(argc==2,"Expected test output directory");
         Debug::Init();
         CheckProjectOpening(argv[1]);
-        CheckSkyboxAssets(argv[1]);
+        CheckNewProject(argv[1]);
         CheckFbxImport(argv[1]);
         CheckUnsavedChanges(argv[1]);
         CheckSceneSettings(argv[1]);

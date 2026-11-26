@@ -12,18 +12,20 @@ struct ComponentType {
     std::function<Component&(GameObject&)> add;
     std::function<void(GameObject&)> remove;
     std::function<void(Component&,const PropertyVisitor&)> fields;
+    bool inspectorVisible=true;
 };
 class ComponentRegistry {
 public:
     std::vector<ComponentType> types;
-    template<class T,class F>void Register(std::string name,F fields){
+    template<class T,class F>void Register(std::string name,F fields,bool inspectorVisible=true){
         RICE_BENCHMARK_FUNCTION();
         if(Find(name))throw std::invalid_argument("Duplicate component registration");
-        types.push_back({std::move(name),[](GameObject& o)->Component*{ RICE_BENCHMARK_FUNCTION(); return o.GetComponent<T>();},[](GameObject& o)->Component&{ RICE_BENCHMARK_FUNCTION(); return o.AddComponent<T>();},[](GameObject& o){ RICE_BENCHMARK_FUNCTION(); o.RemoveComponent<T>();},[fields](Component& c,const PropertyVisitor& visit){ RICE_BENCHMARK_FUNCTION(); visit("Enabled",&c.enabled);fields(static_cast<T&>(c),visit);}});
+        types.push_back({std::move(name),[](GameObject& o)->Component*{ RICE_BENCHMARK_FUNCTION(); return o.GetComponent<T>();},[](GameObject& o)->Component&{ RICE_BENCHMARK_FUNCTION(); return o.AddComponent<T>();},[](GameObject& o){ RICE_BENCHMARK_FUNCTION(); o.RemoveComponent<T>();},[fields](Component& c,const PropertyVisitor& visit){ RICE_BENCHMARK_FUNCTION(); visit("Enabled",&c.enabled);fields(static_cast<T&>(c),visit);},inspectorVisible});
     }
     ComponentType* Find(const std::string& name){ RICE_BENCHMARK_FUNCTION(); for(auto& t:types)if(t.name==name)return &t;return nullptr;}
     ComponentRegistry(){
         RICE_BENCHMARK_FUNCTION();
+        Register<SceneLayer>("Scene Layer",[](auto&,auto&){},false);
         Register<MeshRenderer>("MeshRenderer",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Shape",&c.shape);f("Custom mesh",&c.custom);f("Shape asset",&c.shapeAsset);f("Triangle materials",&c.triangleMaterials);f("Cast shadows",&c.castsShadow);});
         Register<CameraComponent>("Camera",[](auto& c,auto& f){f("Primary",&c.primary);f("Field of view",&c.fieldOfView);f("Near clip",&c.nearClip);f("Far clip",&c.farClip);});
         Register<CameraFollower>("Camera Follower",[](auto& c,auto& f){f("Camera",&c.camera);f("Translation",&c.transform.position);f("Rotation",&c.transform.rotation);f("Scale",&c.transform.localScale);f("Show in Shape Editor",&c.showInEditor);});

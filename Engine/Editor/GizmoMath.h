@@ -104,14 +104,15 @@ inline std::optional<float> Hit(const Ray& ray,const Matrix4& world,Vector3 low,
 }
 inline EntityID Pick(Scene& scene,const Ray& ray,bool selectGroups=true,bool renderedOnly=false){ RICE_BENCHMARK_FUNCTION(); EntityID selected=0;float closest=1e30f;for(auto& obj:scene.GetObjects())if(obj->IsActive()){
     auto* mesh=obj->GetComponent<MeshRenderer>();auto* sprite=obj->GetComponent<SpriteRenderer>();auto* collider=obj->GetComponent<BoxCollider>();
+    const bool group=obj->isGroup&&!obj->GetComponent<SceneLayer>();
     if(renderedOnly&&!(mesh&&mesh->enabled)&&!(sprite&&sprite->enabled))continue;
-    if(!(selectGroups&&obj->isGroup)&&!(mesh&&mesh->enabled)&&!(sprite&&sprite->enabled)&&!(collider&&collider->enabled))continue;
-    auto [low,high]=renderedOnly?PrimitiveBounds(*obj):Bounds(*obj);auto hit=Hit(ray,obj->GetWorldMatrix(),low,high);
-    if(hit&&mesh&&mesh->enabled&&mesh->shape==int(BasicShape::Custom)&&!mesh->custom.Empty()&&!obj->isGroup){
+    if(!(selectGroups&&group)&&!(mesh&&mesh->enabled)&&!(sprite&&sprite->enabled)&&!(collider&&collider->enabled))continue;
+    auto [low,high]=group&&!renderedOnly?Bounds(*obj):PrimitiveBounds(*obj);auto hit=Hit(ray,obj->GetWorldMatrix(),low,high);
+    if(hit&&mesh&&mesh->enabled&&mesh->shape==int(BasicShape::Custom)&&!mesh->custom.Empty()&&!group){
         auto inverse=glm::inverse(obj->GetWorldMatrix());hit=mesh->Intersection().Hit(Vector3(inverse*Vector4(ray.origin,1)),Vector3(inverse*Vector4(ray.direction,0)));
     }
     if(hit&&*hit<closest){closest=*hit;selected=obj->GetID();}}
-    if(selectGroups)if(auto* obj=scene.Find(selected))for(auto* p=obj->GetHierarchyParent();p;p=p->GetHierarchyParent())if(p->isGroup)selected=p->GetID();
+    if(selectGroups)if(auto* obj=scene.Find(selected))for(auto* p=obj->GetHierarchyParent();p;p=p->GetHierarchyParent())if(p->isGroup&&!p->GetComponent<SceneLayer>())selected=p->GetID();
     return selected;
 }
 inline Vector3 ContinuousEuler(Quaternion rotation,Vector3 reference){

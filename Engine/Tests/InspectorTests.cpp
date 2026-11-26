@@ -207,6 +207,33 @@ void TestSceneSettings(const fs::path& root){
     editor.Redo();Check(editor.scene->settings.ground!=old,"Redo reapplies the scene setting after the checkbox click");
 }
 
+void TestNewProjectLayers(const fs::path& root){
+    Fixture test(Project::CreateNew(root/NewAssetID()),false);
+    SceneInspectorTestAccess::ConfigureHeadless(test.inspector);test.fullEditor=true;test.Draw();
+    ImGui::SetWindowPos("Inspector###Inspector",{330,30});ImGui::SetWindowSize("Inspector###Inspector",{430,540});
+    ImGui::SetWindowFocus("Inspector###Inspector");test.Draw();
+    auto* window=ImGui::FindWindowByName("Inspector###Inspector");
+    Check(window&&window->Active,"New project opens its Inspector");
+    std::set<std::string> visibleLayers;
+    for(const auto& object:test.workspace.editor.scene->GetObjects()){
+        if(!object->GetComponent<SceneLayer>())continue;
+        const auto scope=window->GetID(reinterpret_cast<void*>(static_cast<uintptr_t>(object->GetID())));
+        const auto row=ImHashStr(object->name.c_str(),0,scope);
+        bool found=false;
+        for(float y=window->WorkRect.Min.y;y<window->WorkRect.Max.y;y+=3){
+            ImVec2 point{window->WorkRect.Min.x+30,y};
+            test.Draw(point);
+            if(ImGui::GetCurrentContext()->HoveredId!=row)continue;
+            test.Click(point);
+            Check(test.workspace.editor.selected==object->GetID(),"Clicking an Inspector layer selects its scene group");
+            visibleLayers.insert(object->name);found=true;break;
+        }
+        Check(found,"Every starter layer has a visible row in the Inspector");
+    }
+    Check(visibleLayers==std::set<std::string>{"System Layer","Layer 0","Layer 1","Layer 2"},
+          "The new project Inspector shows the System Layer and layers 0 through 2");
+}
+
 void TestComponentControls(const fs::path& root){
     Fixture test(root/NewAssetID());test.Draw();test.Draw();
     auto minus=ImVec2(test.origin.x+26+ImGui::GetStyle().ItemSpacing.x+13,test.origin.y+6);
@@ -388,6 +415,7 @@ int main(int argc,char** argv){try{
     TestSceneCameraOrbit();
     TestEmptyEditor(fs::path(argv[1]));TestProjectClose(fs::path(argv[1]));
     TestChessSettingsMenu(fs::path(argv[1]));
+    TestNewProjectLayers(fs::path(argv[1]));
     TestComponentControls(fs::path(argv[1]));TestEditEvents(fs::path(argv[1]));TestIdleEditor(fs::path(argv[1]));TestSceneSettings(fs::path(argv[1]));TestMaterialProposalHistory(fs::path(argv[1]));
     std::cout<<"Inspector component actions passed\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

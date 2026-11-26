@@ -68,7 +68,12 @@ public:
     void Sync(Scene& scene,const std::set<EntityID>& nextSelection,EntityID nextSelected){
         RICE_BENCHMARK_FUNCTION();
         bool replaced=instance!=scene.GetInstanceID();
-        if(replaced){instance=scene.GetInstanceID();expanded.clear();selection.clear();selected=0;}
+        if(replaced){
+            instance=scene.GetInstanceID();expanded.clear();selection.clear();selected=0;
+            scene.EachComponent<SceneLayer>([&](SceneLayer& layer){
+                expanded.insert(layer.GetGameObject().GetID());
+            });
+        }
         bool changed=replaced||revision!=scene.GetHierarchyRevision();
         if(changed)Rebuild(scene);
         if(changed||selection!=nextSelection||selected!=nextSelected){

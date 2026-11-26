@@ -47,7 +47,7 @@ public:
         if(registerTypes)registerTypes(registry);
         actions["Increment"]=[this]{ RICE_BENCHMARK_FUNCTION(); ++score;Log("Score: "+std::to_string(score));};actions["Quit"]=[]{ RICE_BENCHMARK_FUNCTION(); };
         if(project->HasScene(project->ActiveScene()))editor.Replace(project->LoadScene(registry));
-        else project->SetDefaultSkybox(*editor.scene);
+        else project->InitializeMainScene(*editor.scene);
         savedScene=editor.DocumentSnapshot();
         prefabs.SetDirectory(project->root/"Prefabs",project->assets.Root()/"Prefabs");
         BindScene();

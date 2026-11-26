@@ -187,6 +187,13 @@ int main(){try{
     Scene scene;auto& far=scene.CreateGameObject("far");far.transform.position={0,0,-4};far.AddComponent<MeshRenderer>();auto& near=scene.CreateGameObject("near");near.AddComponent<MeshRenderer>();
     GizmoMath::Ray ray{{0,0,5},{0,0,-1}};Check(GizmoMath::Pick(scene,ray)==near.GetID(),"Pick nearest");near.SetActive(false);Check(GizmoMath::Pick(scene,ray)==far.GetID(),"Skip inactive");
     near.SetActive(true);near.transform.localScale={0,1,1};Check(GizmoMath::Pick(scene,ray)==far.GetID(),"Skip singular transform");
+    Scene layered;
+    auto& layer=layered.CreateGameObject("Layer 0");layer.isGroup=true;layer.AddComponent<SceneLayer>();
+    Check(!GizmoMath::Pick(layered,ray),"An empty scene layer does not intercept viewport picking");
+    auto& member=layered.CreateGameObject("Mesh");member.AddComponent<MeshRenderer>();member.SetGroup(&layer);
+    Check(GizmoMath::Pick(layered,ray)==member.GetID(),"A mesh in a scene layer can be selected directly");
+    auto& objectGroup=layered.CreateGameObject("Group");objectGroup.isGroup=true;objectGroup.SetGroup(&layer);member.SetGroup(&objectGroup);
+    Check(GizmoMath::Pick(layered,ray)==objectGroup.GetID(),"Picking a grouped mesh inside a layer selects the ordinary group");
     auto vp=glm::perspective(glm::radians(45.f),1.5f,.1f,100.f)*glm::lookAt(Vector3(0,0,5),Vector3(0),Vector3(0,1,0));
     auto screen=GizmoMath::Project(Vector3(0),{100,50},{900,600},vp);Check(screen&&Near(screen->x,550)&&Near(screen->y,350),"Viewport offset projection");auto screenRay=GizmoMath::ScreenRay({550,350},{100,50},{900,600},vp);Check(screenRay.direction.z<-.999f,"Unproject ray");
     Transform base;base.rotation={0,85,0};base.localScale={2,3,4};Vector3 pivot(.5f,0,0);auto fixed=Vector3(base.GetMatrix()*Vector4(pivot,1));auto rotated=base;GizmoMath::RotateFace(rotated,base,pivot,1,10);Check(Near(rotated.rotation.y,95),"Continuous Euler beyond 90");Check(glm::length(Vector3(rotated.GetMatrix()*Vector4(pivot,1))-fixed)<.001f,"Face pivot remains stationary");

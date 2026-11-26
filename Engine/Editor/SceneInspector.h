@@ -183,7 +183,7 @@ private:
         ImGui::TextUnformatted("Editor guides (not exported)");
         auto visibility=[&](const char* label,float& value){bool on=value!=0;if(ImGui::Checkbox(label,&on)){beforeEdit();value=on?1.f:0.f;}};
         visibility("X axis",settings.axes.x);ImGui::SameLine();visibility("Y axis",settings.axes.y);ImGui::SameLine();visibility("Z axis",settings.axes.z);
-        visibility("XY grid",settings.grids.x);ImGui::SameLine();visibility("YZ grid",settings.grids.y);ImGui::SameLine();visibility("ZX grid",settings.grids.z);
+        visibility("XY grid",settings.grids.x);ImGui::SameLine();visibility("YZ grid",settings.grids.y);ImGui::SameLine();visibility("XZ grid",settings.grids.z);
         ImGui::PopItemWidth();
         ImGui::EndDisabled();
     }
@@ -441,7 +441,7 @@ private:
         if(!children)flags|=ImGuiTreeNodeFlags_Leaf;
         if(w.editor.IsSelected(obj.GetID()))flags|=ImGuiTreeNodeFlags_Selected;
         ImGui::SetNextItemOpen(!children||hierarchy.Expanded(obj.GetID()),ImGuiCond_Always);
-        bool open=ImGui::TreeNodeEx("Object",flags,"%s%s",obj.isGroup?"[Group] ":"",obj.name.c_str());
+        bool open=ImGui::TreeNodeEx("Object",flags,"%s%s",obj.isGroup&&!obj.GetComponent<SceneLayer>()?"[Group] ":"",obj.name.c_str());
         if(children&&ImGui::IsItemToggledOpen())hierarchy.SetExpanded(obj.GetID(),open);
         if(ImGui::IsItemClicked(0)&&!ImGui::IsItemToggledOpen())w.editor.Select(obj.GetID(),ImGui::GetIO().KeyShift);
         if(ImGui::IsItemClicked(1)){if(!w.editor.IsSelected(obj.GetID()))w.editor.Select(obj.GetID());hierarchyPopupObject=obj.GetID();ImGui::OpenPopup("Object actions");}
@@ -495,6 +495,24 @@ private:
             if(indent)ImGui::Unindent(indent);
         }
     }
+    void DrawLayers(Workspace& w){
+        bool headerDrawn=false,expanded=false;
+        w.editor.scene->EachComponent<SceneLayer>([&](SceneLayer& layer){
+            auto& object=layer.GetGameObject();
+            if(!object.isGroup||object.IsPoolAvailable())return;
+            if(!headerDrawn){
+                expanded=ImGui::CollapsingHeader("Layers",ImGuiTreeNodeFlags_DefaultOpen);
+                headerDrawn=true;
+            }
+            if(!expanded)return;
+            ImGui::PushID(reinterpret_cast<void*>(static_cast<uintptr_t>(object.GetID())));
+            if(ImGui::Selectable(object.name.c_str(),w.editor.IsSelected(object.GetID()))){
+                w.editor.Select(object.GetID());
+                hierarchy.SetExpanded(object.GetID(),true);
+            }
+            ImGui::PopID();
+        });
+    }
     void ComponentMenu(Workspace& w,GameObject& obj,const std::string& name){
         RICE_BENCHMARK_FUNCTION();
         if(ImGui::BeginPopupContextItem("Component actions")){
@@ -544,7 +562,7 @@ private:
                             }
                             ImGui::EndMenu();
                         }
-                        for(auto& type:w.registry.types)if(!MonkeyScriptKind(type.name)&&std::string_view(ComponentCategory(type.name))==category){
+                        for(auto& type:w.registry.types)if(type.inspectorVisible&&!MonkeyScriptKind(type.name)&&std::string_view(ComponentCategory(type.name))==category){
                             bool attached=type.get(obj)!=nullptr;
                             if(ImGui::MenuItem(type.name.c_str(),nullptr,attached,!attached))Guard(w,[&]{BeginObjectEdit(w,obj.GetID());type.add(obj);});
                         }
@@ -866,6 +884,7 @@ public:
         auto* inspected=w.editor.scene->Find(w.editor.selected);
         bool editedShape=inspected&&HasTriangleMaterials(*inspected);
         if(inspectorOpen){ImGui::Begin(editedShape?"Inspector (edited in shape editor)###Inspector":"Inspector###Inspector",&inspectorOpen);
+        DrawLayers(w);
         if(auto* obj=w.editor.scene->Find(w.editor.selected)){
             if(ImGui::Button("Duplicate")){auto id=obj->GetID();pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); EditorClipboard copy;copy.CopyObject(*w.editor.scene,id,w.registry);copy.PasteObject(w.editor,w.registry);};}
             ImGui::SameLine();if(ImGui::Button("Delete"))pendingObjectAction=[&]{w.editor.DeleteSelection();};
@@ -891,7 +910,7 @@ public:
                 DrawPivotFields(*obj,beforeEdit);
                 auto world=Vector3(obj->GetWorldMatrix()[3]);if(ImGui::DragFloat3("World position",&world.x,.05f))Guard(w,[&]{ RICE_BENCHMARK_FUNCTION(); beforeEdit();obj->TranslateWorld(world-Vector3(obj->GetWorldMatrix()[3]));});
                 ComponentFooter(w,*obj,"Transform");ImGui::EndChild();
-                for(auto& type:w.registry.types){ImGui::PushID(type.name.c_str());if(auto* component=type.get(*obj)){
+                for(auto& type:w.registry.types){if(!type.inspectorVisible)continue;ImGui::PushID(type.name.c_str());if(auto* component=type.get(*obj)){
                     bool protectedMaterial=type.name=="Material"&&HasTriangleMaterials(*obj),materialProceeded=false;
                     auto originalMaterial=MaterialSettings(obj->GetComponent<Material>());
                     TriangleMaterials originalTriangles;if(protectedMaterial)originalTriangles=obj->GetComponent<MeshRenderer>()->triangleMaterials;

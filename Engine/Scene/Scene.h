@@ -58,6 +58,8 @@ public:
     virtual void OnPoolRelease() { RICE_BENCHMARK_FUNCTION(); }
     virtual std::optional<std::pair<Vector3,Vector3>> GeometryBounds()const{return std::nullopt;}
 };
+// Distinguishes layer groups from ordinary groups, including after a rename.
+struct SceneLayer : Component {};
 struct Anchor : Component {
     EntityID child=0;
     Transform transform;

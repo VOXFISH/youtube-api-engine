@@ -68,6 +68,7 @@ struct HierarchyFixture {
     Workspace workspace;SceneInspector inspector;
     std::vector<EntityID> ids;
     explicit HierarchyFixture(const fs::path& root):workspace(root,true){
+        workspace.editor.Replace(CreateScope<Scene>());
         for(int i=0;i<1000;++i)ids.push_back(workspace.editor.scene->CreateGameObject("Grass "+std::to_string(i)).GetID());
         ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize={800,600};io.DeltaTime=1.f/60;io.ConfigInputTrickleEventQueue=false;
         unsigned char* pixels;int width,height;io.Fonts->GetTexDataAsRGBA32(&pixels,&width,&height);

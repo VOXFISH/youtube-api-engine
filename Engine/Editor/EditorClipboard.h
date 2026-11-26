@@ -53,10 +53,15 @@ public:
     void CopyComponent(GameObject& obj,const std::string& name,ComponentRegistry& registry){
         RICE_BENCHMARK_FUNCTION();
         if(name=="Transform"){componentTransform=obj.transform;components.clear();return;}
-        auto* type=registry.Find(name);if(!type||!type->get(obj))return;
+        auto* type=registry.Find(name);if(!type||!type->inspectorVisible||!type->get(obj))return;
         auto value=ComponentSnapshot::Capture(*type,*type->get(obj));components={std::move(value)};componentTransform.reset();
     }
-    void CopyAllComponents(GameObject& obj,ComponentRegistry& registry){ RICE_BENCHMARK_FUNCTION(); auto values=ComponentSnapshot::CaptureAll(obj,registry);components=std::move(values);componentTransform=obj.transform;}
+    void CopyAllComponents(GameObject& obj,ComponentRegistry& registry){
+        RICE_BENCHMARK_FUNCTION();
+        auto values=ComponentSnapshot::CaptureAll(obj,registry);
+        std::erase_if(values,[&](const auto& value){return !registry.Find(value.type)->inspectorVisible;});
+        components=std::move(values);componentTransform=obj.transform;
+    }
     void PasteComponents(GameObject& obj,ComponentRegistry& registry){
         RICE_BENCHMARK_FUNCTION();
         if(!HasComponents())return;

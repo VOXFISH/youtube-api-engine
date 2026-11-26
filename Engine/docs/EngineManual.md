@@ -9,6 +9,7 @@ Windows x64 / C++20 / OpenGL 3.3 기반의 작은 2D·3D 게임 제작용 엔진
 ## 바로 실행
 
 - **Rice.exe**에서 **File → New Project**를 누르고 이름을 입력하면 `Projects/<이름>/<이름>.rice`가 생성된다. 기존 프로젝트는 **File → Open Project**에서 `.rice` 파일을 선택한다.
+- 새 프로젝트의 Inspector에는 **System Layer**, **Layer 0**, **Layer 1**, **Layer 2**가 표시된다. **System Layer** 아래의 **Directional Light**를 선택해 조명을 편집할 수 있다. 기본 Ground는 Y=0에서 동적 물체를 받치며, Scene 뷰에는 XZ 격자와 X·Y·Z 좌표축이 표시된다.
 - **RicePlayer.exe**는 로컬 게임용이다. 실행 후 `Builds`에서 게임 EXE를 고르거나 게임 EXE를 RicePlayer 위에 끌어 놓는다. 완성된 게임 EXE는 자체적으로 실행할 수도 있다.
 - **RiceCon.exe**는 빌드를 등록하고 YouTube 송출을 운영하는 별도 앱이다. 빌드 파일을 RiceCon 위에 끌어 놓거나 `RiceCon.exe --build <게임.exe>`로 등록한다.
 - 예제 프로젝트는 `Projects/Grass1000/Grass1000.rice`와 `Projects/Steve/Steve.rice`에서 연다. **Game → Play**로 실행한다.
@@ -453,5 +454,5 @@ Play는 물리·스크립트·애니메이션을 시작한다. 상단 Pause는 �
 
 메인 편집기 상단의 **Settings → Scene**에서 씬별 환경을 설정한다. **Settings → Streaming**에서 YouTube Commands와 Cycle을 열고, **Settings → Script editor**에서 스크립트를 열 앱을 선택한다. Skybox 토글과 애셋 선택은 파노라마 또는 cubemap atlas 이미지를 사용한다. Default directional light는 별도의 오브젝트 없이 색상·강도·방향을 설정한다. Ground는 y=0의 연한 회색 무한 평면이며, Ground collision을 켜면 활성 Rigidbody와 비 Trigger BoxCollider를 가진 동적 물체를 지지한다. Kinematic은 기존처럼 지정한 이동을 유지한다.
 
-X/Y/Z 축과 XY/YZ/ZX grid는 각각 켜거나 끌 수 있고 Scene 뷰에만 나타난다. Game 뷰, 반사 캡처, 독립 실행 플레이어에는 표시되지 않으며, 내보낸 씬 파일에서는 EditorGrid 설정도 제외된다. 환경 설정은 씬 저장·복제·Undo/Redo·Play/Stop에 함께 반영된다.
+X/Y/Z 축과 XY/YZ/XZ 격자는 각각 켜거나 끌 수 있고 Scene 뷰에만 나타난다. Game 뷰, 반사 캡처, 독립 실행 플레이어에는 표시되지 않으며, 내보낸 씬 파일에서는 EditorGrid 설정도 제외된다. 환경 설정은 씬 저장·복제·Undo/Redo·Play/Stop에 함께 반영된다.
 

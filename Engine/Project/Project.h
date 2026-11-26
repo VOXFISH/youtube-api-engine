@@ -231,10 +231,10 @@ public:
         if (fs::exists(directory) && (!fs::is_directory(directory) || !fs::is_empty(directory)))
             throw std::runtime_error("Choose a new or empty project folder");
         Project project(path);
-        Scene empty;
-        project.SetDefaultSkybox(empty);
+        Scene main;
+        project.InitializeMainScene(main);
         ComponentRegistry registry;
-        project.SaveScene(empty, registry, project.ActiveScene());
+        project.SaveScene(main, registry, project.ActiveScene());
         return project.FilePath();
     }
     const fs::path& FilePath() const { return file; }
@@ -242,6 +242,26 @@ public:
         if (defaultSkybox.empty()) throw std::runtime_error("The default Skybox/sky.png asset is missing");
         scene.settings.skybox = true;
         scene.settings.skyboxAsset = defaultSkybox;
+    }
+    void InitializeMainScene(Scene& scene) const {
+        SetDefaultSkybox(scene);
+        scene.settings.ground = true;
+        scene.settings.groundCollision = true;
+        scene.settings.grids = {0, 0, 1}; // XY, YZ, XZ
+        scene.settings.axes = Vector3(1);
+
+        auto createLayer = [&](const char* name) -> GameObject& {
+            auto& layer = scene.CreateGameObject(name);
+            layer.isGroup = true;
+            layer.AddComponent<SceneLayer>();
+            return layer;
+        };
+        auto& system = createLayer("System Layer");
+        for (const char* name : {"Layer 0", "Layer 1", "Layer 2"}) createLayer(name);
+
+        auto& sun = scene.CreateGameObject("Directional Light");
+        sun.SetGroup(&system, false);
+        sun.AddComponent<Light>().type = 1;
     }
     const fs::path& ActiveScene() const { return data.activeScene; }
     bool InputBindingsChanged() const { return input.keys != data.bindings; }
