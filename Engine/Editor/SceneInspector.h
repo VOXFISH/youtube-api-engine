@@ -65,7 +65,7 @@ private:
     EntityID interactionObject=0;
     uint64_t interactionScene=0;
     ImGuiID interactionItem=0;
-    bool interactionSettings=false;
+    bool interactionSettings=false,editingName=false;
     std::string sceneName="New Scene",prefabName,selectedPrefab;
     bool duplicateScene=false;
     EntityID prefabRoot=0;
@@ -101,10 +101,12 @@ private:
         if(!editing)return;
         editing=false;
         if(!w.editor.playing&&interactionScene==w.editor.scene->GetInstanceID()){
+            if(editingName)if(auto* obj=w.editor.scene->Find(interactionObject))
+                obj->name=w.editor.scene->UniqueObjectName(obj->name,obj);
             w.editor.scene->Flush();
             w.editor.Record(interactionSnapshot);
         }
-        interactionSnapshot={};interactionObject=0;interactionScene=0;interactionItem=0;interactionSettings=false;
+        interactionSnapshot={};interactionObject=0;interactionScene=0;interactionItem=0;interactionSettings=false;editingName=false;
     }
     void BeginObjectEdit(Workspace& w,EntityID id){
         RICE_BENCHMARK_FUNCTION();
@@ -446,16 +448,23 @@ private:
         RICE_BENCHMARK_FUNCTION();
         if(!ImGui::BeginPopup(popup))return;
         ImGui::BeginDisabled(w.editor.playing);
+        auto* target=w.editor.scene->Find(id);
+        const bool layer=target&&target->GetComponent<SceneLayer>();
+        const bool canCopy=target&&!target->IsRequiredLayer();
         if(ImGui::MenuItem("Select All Children"))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); w.editor.SelectChildren(id);};
-        if(ImGui::MenuItem("Copy Object"))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); clipboard.CopyObject(*w.editor.scene,id,w.registry);};
+        if(ImGui::MenuItem("Copy Object",nullptr,false,canCopy))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); clipboard.CopyObject(*w.editor.scene,id,w.registry);};
         if(ImGui::MenuItem("Copy All Components"))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); if(auto* obj=w.editor.scene->Find(id))clipboard.CopyAllComponents(*obj,w.registry);};
         if(ImGui::MenuItem("Paste All Components",nullptr,false,clipboard.HasComponents()))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); w.editor.Edit([&](Scene& scene){ RICE_BENCHMARK_FUNCTION(); if(auto* obj=scene.Find(id))clipboard.PasteComponents(*obj,w.registry);});};
-        if(ImGui::MenuItem("Clone"))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); EditorClipboard copy;copy.CopyObject(*w.editor.scene,id,w.registry);copy.PasteObject(w.editor,w.registry);};
-        if(ImGui::MenuItem("Reproduce"))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); w.editor.Edit([&](Scene& scene){ RICE_BENCHMARK_FUNCTION(); if(auto* parent=scene.Find(id)){auto& child=scene.CreateGameObject("Child");child.SetParent(parent);w.editor.Select(child.GetID());}});};
-        if(ImGui::MenuItem("Group","Ctrl+G"))pendingObjectAction=[&]{ RICE_BENCHMARK_FUNCTION(); EditorGroups::Create(w.editor,w.editor.selection);};
-        if(auto* obj=w.editor.scene->Find(id);obj&&obj->isGroup)if(ImGui::MenuItem("Ungroup","Ctrl+Shift+G"))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); EditorGroups::Ungroup(w.editor,id);};
+        if(ImGui::MenuItem("Clone",nullptr,false,canCopy))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); EditorClipboard copy;copy.CopyObject(*w.editor.scene,id,w.registry);copy.PasteObject(w.editor,w.registry);};
+        if(ImGui::MenuItem("Reproduce"))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); w.editor.Edit([&](Scene& scene){ RICE_BENCHMARK_FUNCTION(); if(auto* parent=scene.Find(id)){auto& child=scene.CreateGameObject();child.SetParent(parent);w.editor.Select(child.GetID());}});};
+        if(ImGui::MenuItem("Group","Ctrl+G",false,!layer))pendingObjectAction=[&]{ RICE_BENCHMARK_FUNCTION(); EditorGroups::Create(w.editor,w.editor.selection);};
+        if(target&&target->isGroup&&!layer&&ImGui::MenuItem("Ungroup","Ctrl+Shift+G"))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); EditorGroups::Ungroup(w.editor,id);};
         if(ImGui::MenuItem("Control Children","Ctrl+T"))pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); EditorGroups::ControlChildren(w.editor,id);};
         ImGui::EndDisabled();ImGui::EndPopup();
+    }
+    static ImVec4 RequiredLayerColor(const GameObject& object){
+        return object.GetComponent<SceneLayer>()->role==SceneLayer::System
+            ?ImVec4(1.f,.78f,.38f,1.f):ImVec4(.48f,.85f,1.f,1.f);
     }
     void HierarchyNode(Workspace& w,GameObject& obj){
         RICE_BENCHMARK_FUNCTION();
@@ -466,20 +475,24 @@ private:
         if(!children)flags|=ImGuiTreeNodeFlags_Leaf;
         if(w.editor.IsSelected(obj.GetID()))flags|=ImGuiTreeNodeFlags_Selected;
         ImGui::SetNextItemOpen(!children||hierarchy.Expanded(obj.GetID()),ImGuiCond_Always);
+        const bool required=obj.IsRequiredLayer();
+        if(required)ImGui::PushStyleColor(ImGuiCol_Text,RequiredLayerColor(obj));
         bool open=ImGui::TreeNodeEx("Object",flags,"%s%s",obj.isGroup&&!obj.GetComponent<SceneLayer>()?"[Group] ":"",obj.name.c_str());
+        if(required)ImGui::PopStyleColor();
         if(children&&ImGui::IsItemToggledOpen())hierarchy.SetExpanded(obj.GetID(),open);
         if(ImGui::IsItemClicked(0)&&!ImGui::IsItemToggledOpen())w.editor.Select(obj.GetID(),ImGui::GetIO().KeyShift);
         if(ImGui::IsItemClicked(1)){if(!w.editor.IsSelected(obj.GetID()))w.editor.Select(obj.GetID());hierarchyPopupObject=obj.GetID();ImGui::OpenPopup("Object actions");}
         auto rowMin=ImGui::GetItemRectMin(),rowMax=ImGui::GetItemRectMax();bool insertionAfter=false;
         auto insertionLine=[&](float y){ RICE_BENCHMARK_FUNCTION(); auto* draw=ImGui::GetWindowDrawList();auto color=IM_COL32(255,220,40,255);draw->AddLine({rowMin.x,y},{rowMax.x,y},color,2.f);draw->AddTriangleFilled({rowMin.x,y-4},{rowMin.x+6,y},{rowMin.x,y+4},color);};
-        if(!w.editor.playing&&ImGui::BeginDragDropSource()){auto id=obj.GetID();hierarchyDragObject=id;ImGui::SetDragDropPayload("RICE_OBJECT",&id,sizeof(id));ImGui::TextUnformatted(obj.name.c_str());ImGui::EndDragDropSource();}
+        if(!w.editor.playing&&!required&&ImGui::BeginDragDropSource()){auto id=obj.GetID();hierarchyDragObject=id;ImGui::SetDragDropPayload("RICE_OBJECT",&id,sizeof(id));ImGui::TextUnformatted(obj.name.c_str());ImGui::EndDragDropSource();}
         if(!w.editor.playing&&ImGui::BeginDragDropTarget()){
             if(auto* payload=ImGui::AcceptDragDropPayload("RICE_OBJECT",ImGuiDragDropFlags_AcceptBeforeDelivery|ImGuiDragDropFlags_AcceptNoDrawDefaultRect)){
                 auto source=*static_cast<const EntityID*>(payload->Data);auto target=obj.GetID();
                 float zone=std::min(6.f,(rowMax.y-rowMin.y)*.25f),y=ImGui::GetIO().MousePos.y;
                 int placement=y<rowMin.y+zone?-1:y>rowMax.y-zone?1:0;
                 auto* child=w.editor.scene->Find(source);auto* parent=placement?obj.GetHierarchyParent():&obj;
-                bool valid=child&&source!=target&&(!parent||!parent->DependsOn(child));
+                bool valid=child&&source!=target&&(!parent||!parent->DependsOn(child))&&
+                    (placement?EditorGroups::CanPlaceBeside(*child,obj):!child->GetComponent<SceneLayer>());
                 if(valid){
                     if(placement<0)insertionLine(rowMin.y);
                     else if(placement>0)insertionAfter=true;
@@ -521,22 +534,29 @@ private:
         }
     }
     void DrawLayers(Workspace& w){
-        bool headerDrawn=false,expanded=false;
-        w.editor.scene->EachComponent<SceneLayer>([&](SceneLayer& layer){
-            auto& object=layer.GetGameObject();
-            if(!object.isGroup||object.IsPoolAvailable())return;
-            if(!headerDrawn){
-                expanded=ImGui::CollapsingHeader("Layers",ImGuiTreeNodeFlags_DefaultOpen);
-                headerDrawn=true;
-            }
-            if(!expanded)return;
+        hierarchy.Sync(*w.editor.scene,w.editor.selection,w.editor.selected);
+        if(!ImGui::CollapsingHeader("Layers",ImGuiTreeNodeFlags_DefaultOpen))return;
+        const auto& layers=hierarchy.Layers();
+        for(size_t index=0;index<layers.size();++index){
+            auto& object=*layers[index];
             ImGui::PushID(reinterpret_cast<void*>(static_cast<uintptr_t>(object.GetID())));
-            if(ImGui::Selectable(object.name.c_str(),w.editor.IsSelected(object.GetID()))){
+            if(object.IsRequiredLayer())ImGui::PushStyleColor(ImGuiCol_Text,RequiredLayerColor(object));
+            auto label="Layer "+std::to_string(index)+"   "+object.name+"###LayerRow";
+            if(ImGui::Selectable(label.c_str(),w.editor.IsSelected(object.GetID()))){
                 w.editor.Select(object.GetID());
                 hierarchy.SetExpanded(object.GetID(),true);
             }
+            if(object.IsRequiredLayer()){
+                ImGui::PopStyleColor();
+                ImGui::SetItemTooltip("Required layer");
+            }
             ImGui::PopID();
-        });
+        }
+        ImGui::BeginDisabled(w.editor.playing);
+        if(ImGui::Button("Add game layer"))pendingObjectAction=[&]{
+            w.editor.Edit([&](Scene& scene){w.editor.Select(SceneLayers::Create(scene,"Game").GetID());});
+        };
+        ImGui::EndDisabled();
     }
     void ComponentMenu(Workspace& w,GameObject& obj,const std::string& name){
         RICE_BENCHMARK_FUNCTION();
@@ -855,9 +875,9 @@ public:
         SceneControls(w);
         if(ImGui::Button("Create object"))ImGui::OpenPopup("Create object menu");
         if(ImGui::BeginPopup("Create object menu")) {
-            auto create=[&](const char* name,int shape,int script,bool sprite) {
+            auto create=[&](int shape,int script,bool sprite) {
                 RICE_BENCHMARK_FUNCTION();
-                pendingObjectAction=[&,name,shape,script,sprite] {
+                pendingObjectAction=[&,shape,script,sprite] {
                     RICE_BENCHMARK_FUNCTION();
                     w.editor.Edit([&](Scene& scene) {
                         RICE_BENCHMARK_FUNCTION();
@@ -865,7 +885,8 @@ public:
                             w.editor.Select(manager->GetGameObject().GetID());
                             return;
                         }
-                        auto& object=scene.CreateGameObject(name);
+                        auto& object=scene.CreateGameObject();
+                        SceneLayers::PlaceRoot(object,scene.Find(w.editor.selected));
                         if(shape>=0)object.AddComponent<MeshRenderer>().SetShape(shape);
                         if(sprite)object.AddComponent<SpriteRenderer>();
                         if(script==4)object.AddComponent<CameraComponent>();
@@ -880,22 +901,23 @@ public:
                 };
                 ImGui::CloseCurrentPopup();
             };
-            if(ImGui::Selectable("Camera"))create("Camera",-1,4,false);
+            if(ImGui::Selectable("New Object"))create(-1,0,false);
+            if(ImGui::Selectable("Camera"))create(-1,4,false);
             if(ImGui::BeginTabBar("Object types")) {
                 if(ImGui::BeginTabItem("Basic shapes")) {
                     const char* names[]={"Cube","Circle","Rectangle","Sphere","Cylinder","Cone","Custom"};
-                    for(int i=0;i<7;++i)if(ImGui::Selectable(names[i]))create(names[i],i,0,false);
+                    for(int i=0;i<7;++i)if(ImGui::Selectable(names[i]))create(i,0,false);
                     ImGui::EndTabItem();
                 }
                 if(ImGui::BeginTabItem("Sprite")) {
-                    if(ImGui::Selectable("2D Image"))create("Sprite",-1,0,true);
+                    if(ImGui::Selectable("2D Image"))create(-1,0,true);
                     ImGui::TextUnformatted("Choose an image in Inspector.");
                     ImGui::EndTabItem();
                 }
                 if(ImGui::BeginTabItem("Monkey Script")) {
-                    if(ImGui::Selectable("Object"))create("Object",-1,1,false);
-                    if(ImGui::Selectable("Singleton Manager"))create("Singleton Manager",-1,2,false);
-                    if(ImGui::Selectable("Blank Script"))create("Blank Script",-1,3,false);
+                    if(ImGui::Selectable("Object"))create(-1,1,false);
+                    if(ImGui::Selectable("Singleton Manager"))create(-1,2,false);
+                    if(ImGui::Selectable("Blank Script"))create(-1,3,false);
                     ImGui::EndTabItem();
                 }
                 ImGui::EndTabBar();
@@ -911,17 +933,28 @@ public:
         if(inspectorOpen){ImGui::Begin(editedShape?"Inspector (edited in shape editor)###Inspector":"Inspector###Inspector",&inspectorOpen);
         DrawLayers(w);
         if(auto* obj=w.editor.scene->Find(w.editor.selected)){
+            ImGui::BeginDisabled(obj->IsRequiredLayer());
             if(ImGui::Button("Duplicate")){auto id=obj->GetID();pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); EditorClipboard copy;copy.CopyObject(*w.editor.scene,id,w.registry);copy.PasteObject(w.editor,w.registry);};}
             ImGui::SameLine();if(ImGui::Button("Delete"))pendingObjectAction=[&]{w.editor.DeleteSelection();};
+            ImGui::EndDisabled();
             if(!obj->IsPendingDestroy()){
                 BeforeEditorEdit beforeEdit=[&]{BeginObjectEdit(w,obj->GetID());};
-                EditString("Name",obj->name,beforeEdit);EditValue(obj->activeSelf,beforeEdit,[](bool& next){return ImGui::Checkbox("Active",&next);});
-                if(ImGui::BeginCombo("Parent",obj->GetHierarchyParent()?obj->GetHierarchyParent()->name.c_str():"Root")){
+                const bool layer=obj->GetComponent<SceneLayer>()!=nullptr;
+                ImGui::BeginDisabled(obj->IsRequiredLayer());
+                EditString("Name",obj->name,[&]{beforeEdit();editingName=editing;});
+                ImGui::EndDisabled();
+                EditValue(obj->activeSelf,beforeEdit,[](bool& next){return ImGui::Checkbox("Active",&next);});
+                if(!layer&&ImGui::BeginCombo("Parent",obj->GetHierarchyParent()?obj->GetHierarchyParent()->name.c_str():"Root")){
                     auto reparent=[&](EntityID parent){auto id=obj->GetID();pendingObjectAction=[&,id,parent]{w.editor.Edit([&](Scene& scene){EditorGroups::Reparent(*scene.Find(id),scene.Find(parent));});};};
-                    if(ImGui::Selectable("Root"))reparent(0);
-                    for(auto& candidate:w.editor.scene->GetObjects())if(candidate.get()!=obj&&ImGui::Selectable(candidate->name.c_str()))reparent(candidate->GetID());ImGui::EndCombo();
+                    if(hierarchy.Layers().empty()&&ImGui::Selectable("Root"))reparent(0);
+                    for(auto& candidate:w.editor.scene->GetObjects())if(!candidate->DependsOn(obj)){
+                        ImGui::PushID(candidate.get());
+                        if(ImGui::Selectable(candidate->name.c_str()))reparent(candidate->GetID());
+                        ImGui::PopID();
+                    }
+                    ImGui::EndCombo();
                 }
-                if(obj->isGroup){auto [a,b]=GizmoMath::SpaceBounds(*obj,Matrix4(1));
+                if(obj->isGroup&&!layer){auto [a,b]=GizmoMath::SpaceBounds(*obj,Matrix4(1));
                     auto size=b-a;ImGui::Text("Group world size: %.3f, %.3f, %.3f",size.x,size.y,size.z);
                     if(ImGui::Button("Ungroup")){auto id=obj->GetID();pendingObjectAction=[&,id]{ RICE_BENCHMARK_FUNCTION(); EditorGroups::Ungroup(w.editor,id);};}
                 }

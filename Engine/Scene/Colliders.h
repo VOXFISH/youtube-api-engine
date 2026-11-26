@@ -160,10 +160,12 @@ inline std::optional<Contact> BoxTriangle(const SpatialBounds& box,const Triangl
 }
 
 inline Contact BoxBox(const SpatialBounds& a,const SpatialBounds& b){
-    // Preserve the established AABB response, including its deterministic axis tie break.
-    Vector3 depth=glm::min(a.high,b.high)-glm::max(a.low,b.low);
+    // Distance to the opposing face in each direction also covers an interval
+    // fully contained in the other box after a physics step.
+    Vector3 negative=a.high-b.low,positive=b.high-a.low;
+    Vector3 depth=glm::min(negative,positive);
     int axis=depth.x<depth.y?0:1;if(depth.z<depth[axis])axis=2;
-    Vector3 normal(0);normal[axis]=(a.low[axis]+a.high[axis]<b.low[axis]+b.high[axis])?-1.f:1.f;
+    Vector3 normal(0);normal[axis]=negative[axis]<positive[axis]?-1.f:1.f;
     return {normal,depth[axis]};
 }
 

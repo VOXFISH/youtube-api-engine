@@ -143,6 +143,31 @@ static void TestDisconnectedShells(){
           "Mesh contact pushes a piece back into the gap by its actual penetration depth");
 }
 
+static void TestThinBoardContact(){
+    for(bool boardFirst:{false,true}){
+        Scene scene;
+        auto& first=scene.CreateGameObject();
+        auto& second=scene.CreateGameObject();
+        auto& board=boardFirst?first:second;
+        auto& piece=boardFirst?second:first;
+        board.transform.position.y=1.f;
+        auto& boardBox=board.AddComponent<BoxCollider>();
+        boardBox.size={6.f,.25f,6.f};
+        piece.transform.position.y=2.f;
+        auto& pieceBox=piece.AddComponent<BoxCollider>();
+        pieceBox.size=Vector3(1.5f);
+        auto& body=piece.AddComponent<Rigidbody>();
+        body.useGravity=false;body.restitution=.5f;body.velocity.y=-42.f;
+
+        // After integration the piece spans the board's entire thickness.
+        PhysicsSystem physics;
+        physics.Update(scene,1.f/60);
+        Check(std::abs(pieceBox.GetBounds().first.y-boardBox.GetBounds().second.y)<1e-5f,
+              "A fast box is separated to the board surface in a single step");
+        Check(std::abs(body.velocity.y-21.f)<1e-5f,"The box rebounds upwards with its authored restitution");
+    }
+}
+
 static void TestShapeResponse(){
     Scene scene;
     auto& ramp=scene.CreateGameObject("Ramp");ramp.AddComponent<PolygonCollider>();
@@ -171,7 +196,7 @@ static void TestShapeResponse(){
 }
 
 int main(){try{
-    TestRoundContacts();TestPolygonContacts();TestDisconnectedShells();TestShapeResponse();
+    TestRoundContacts();TestPolygonContacts();TestDisconnectedShells();TestThinBoardContact();TestShapeResponse();
     {
         Scene scene;scene.settings.ground=true;
         auto& probe=Body(scene,1,{0,.25f,0},true);

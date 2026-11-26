@@ -39,6 +39,26 @@ GameObject& Caster(Scene& scene){
 }
 PerspectiveCamera GroundCamera(){PerspectiveCamera camera(45,1,.1f,100);camera.SetPosition({5,5,7});camera.LookAtObj({0,.3f,0});return camera;}
 
+void CheckSubtexelShadowEdge(SceneRenderer& renderer,ViewportTarget& target){
+    Scene scene;
+    scene.settings.ground=true;
+    scene.settings.directionalLight=true;
+    scene.settings.lightDirection={1,-2,0};
+    Caster(scene);
+    // Magnify a straight edge on the neutral ground so one map texel spans
+    // many screen pixels. Snapped, equal-weight 3x3 PCF gives only four tones.
+    PerspectiveCamera camera(8,1,.1f,10);
+    camera.SetPosition({1.5f,2,1});
+    camera.LookAtObj({1.5f,0,0});
+    renderer.SetShadowResolution(64);
+    const auto image=Capture(renderer,target,scene,camera);
+    std::array<bool,256> tones{};
+    for(int x=0;x<Size;++x)tones[image[4*(Size*(Size/2)+x)]]=true;
+    Check(std::count(tones.begin(),tones.end(),true)>=16,
+          "Magnified shadow edges vary continuously within each map texel");
+    renderer.SetShadowResolution(512);
+}
+
 void CheckObjectSelfShadow(SceneRenderer& renderer,ViewportTarget& target){
     for(bool directional:{true,false}){
         Scene scene;
@@ -342,7 +362,7 @@ int main(int argc,char** argv){GLFWwindow* window=nullptr;try{
     Debug::Init();CheckSerialization();Check(glfwInit()!=0,"GLFW initialization");glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
     window=glfwCreateWindow(Size,Size,"Shadow regression",nullptr,nullptr);Check(window!=nullptr,"Hidden GL context");glfwMakeContextCurrent(window);Check(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)!=0,"GL loader");
     {SceneRenderer renderer;ViewportTarget target;renderer.SetShadowResolution(512);RenderCommand::SetDepthTestEnabled(true);
-        CheckObjectSelfShadow(renderer,target);CheckDirectional(renderer,target);CheckPointAndMesh(renderer,target);CheckAlphaCaster(renderer,target);CheckPointFaces(renderer,target);CheckReflection(renderer,target);
+        CheckSubtexelShadowEdge(renderer,target);CheckObjectSelfShadow(renderer,target);CheckDirectional(renderer,target);CheckPointAndMesh(renderer,target);CheckAlphaCaster(renderer,target);CheckPointFaces(renderer,target);CheckReflection(renderer,target);
         CheckMixedLights(renderer,target);CheckGroundReflection(renderer,target,argc>1?argv[1]:nullptr);CheckOptimizationModes(renderer,target);}
     glfwDestroyWindow(window);glfwTerminate();std::cout<<"Directional/point/ground/mesh/cutout/reflection shadow regression passed\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';if(window)glfwDestroyWindow(window);glfwTerminate();return 1;}}

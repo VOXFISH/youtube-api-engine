@@ -25,12 +25,12 @@ void CheckNewProjectScene(const Scene& scene) {
             auto* group=object->GetGroup();
             Check(object->name=="Directional Light"&&object->IsActive()&&light->enabled&&light->intensity>0,
                   "The starter directional light provides light");
-            Check(group&&group->GetComponent<SceneLayer>()&&group->name=="System Layer",
-                  "The starter directional light belongs to the System Layer");
+            Check(group&&group->IsRequiredLayer()&&group->GetComponent<SceneLayer>()->role==SceneLayer::System,
+                  "The starter directional light belongs to System");
             ++directionalLights;
         }
     }
-    Check(layers==std::set<std::string>{"System Layer","Layer 0","Layer 1","Layer 2"},"A new project contains all four layers");
+    Check(layers==std::set<std::string>{"System","UI","Game"},"A new project contains the three default layers");
     const auto& settings=scene.settings;
     Check(directionalLights==1&&!settings.directionalLight,"The starter scene has a single directional light source");
     Check(settings.axes==Vector3(1)&&settings.grids==Vector3(0,0,1),"Only XZ grid and all three coordinate axes are visible");
@@ -112,10 +112,18 @@ struct SpawnOnStart : MonoBehaviour {
     inline static EntityID first=0,reused=0;
     void Start() override {
         auto& scene=GetGameObject().GetScene();
+        auto* game=SceneLayers::PlacementLayer(scene);
+        game->transform.position={2,4,-6};
         scene.PrewarmPrefab("Reusable",1);
-        first=scene.InstantiatePrefab("Reusable",{3,2,1}).GetID();
+        auto& instance=scene.InstantiatePrefab("Reusable",{3,2,1});
+        first=instance.GetID();
+        Check(instance.GetGroup()==game&&Vector3(instance.GetWorldMatrix()[3])==Vector3(3,2,1),
+              "Script-spawned prefabs bind to Game at the requested world position");
+        instance.SetGroup(SceneLayers::Ordered(scene)[1]);
         Check(scene.ReleasePrefab(first),"Script releases pooled instance");
         reused=scene.InstantiatePrefab("Reusable",{4,5,6}).GetID();
+        Check(scene.Find(reused)->GetGroup()==game&&Vector3(scene.Find(reused)->GetWorldMatrix()[3])==Vector3(4,5,6),
+              "Reacquisition resets old layer membership and retains the new world position");
     }
 };
 
@@ -147,6 +155,10 @@ void CheckFbxImport(const fs::path& output) {
     const auto initialAssetCount=w.project->assets.Entries().size();
     const auto existing=w.editor.scene->CreateGameObject("Existing").GetID();
     const auto existingObjects=w.editor.scene->GetObjectCount();
+    GameObject* targetLayer=nullptr;
+    for(const auto& obj:w.editor.scene->GetObjects())if(obj->name=="Game")targetLayer=obj.get();
+    Check(targetLayer!=nullptr,"Import fixture has a target layer");
+    w.editor.Select(targetLayer->GetID());
     w.Save();
     const auto imported=w.ImportFbx(source);
     const auto asset=w.project->assets.Root()/source.filename();
@@ -154,6 +166,7 @@ void CheckFbxImport(const fs::path& output) {
           "FBX import keeps a portable copy of the original");
     Check(w.editor.selected==imported&&w.editor.scene->Find(existing)&&w.editor.scene->GetObjectCount()==existingObjects+3,
           "Import adds a selected model hierarchy to the current scene");
+    Check(w.editor.scene->Find(imported)->GetGroup()==targetLayer,"Imported model belongs to the selected layer");
     Check(w.editor.UndoCount()==1&&w.HasUnsavedChanges(),"Import records one undoable edit");
     w.editor.Undo();
     Check(!w.editor.scene->Find(imported)&&w.editor.scene->Find(existing)&&!w.HasUnsavedChanges(),
@@ -345,24 +358,157 @@ void CheckNamedSceneOnly(const fs::path& output) {
     Scene scene;
     auto& object=scene.CreateGameObject("Named scene object");
     object.transform.position={7,8,9};
+    object.transform.localScale={3,4,5};
+    object.AddComponent<Light>();
     auto objectID=object.GetID();
+    auto& piece=scene.CreateGameObject("Child piece");
+    piece.SetParent(&object);
+    piece.transform.position={1,2,3};
+    piece.AddComponent<Rigidbody>();
+    const auto pieceID=piece.GetID();
+    const auto pieceWorld=piece.GetWorldMatrix();
     SceneCodec(registry).Save(scene,root/"Scenes"/"Second.rice");
     AtomicWrite(root/"project.rice","RICE_PROJECT 2 1\n\"Jump\" 32\nActiveScene \"Scenes/Second.rice\"\n");
     Check(!fs::exists(root/"main.rice"),"Named-scene fixture must have no main scene");
     {
         Workspace workspace(root,true);
-        Check(workspace.project->ActiveScene()=="Scenes/Second.rice"&&workspace.editor.scene->GetObjectCount()==1,
+        Check(workspace.project->ActiveScene()=="Scenes/Second.rice"&&workspace.editor.scene->GetObjectCount()==5,
               "Version 2 project opens its named scene without main.rice");
         Check(workspace.editor.scene->Find(objectID)&&workspace.editor.scene->Find(objectID)->transform.position==Vector3(7,8,9),
               "Named scene loads original objects and properties");
+        auto* rootObject=workspace.editor.scene->Find(objectID);
+        auto* layer=rootObject->GetGroup();
+        auto* child=workspace.editor.scene->Find(pieceID);
+        Check(layer&&layer->name=="Game"&&layer->GetComponent<SceneLayer>()&&child&&
+              child->GetParent()==rootObject&&!child->GetGroup()&&child->GetWorldMatrix()==pieceWorld&&
+              child->GetComponent<Rigidbody>()&&rootObject->GetComponent<Light>(),
+              "Legacy models acquire a layer without changing authored hierarchy, transforms or components");
+        auto secondLoad=workspace.project->LoadScene(workspace.registry);
+        Check(secondLoad->Find(objectID)->GetGroup()->GetID()==layer->GetID(),"Layers have stable IDs before the first save");
+        layer->name="Board pieces";
+        workspace.editor.scene->CreateGameObject("Loose game object");
         workspace.Save();
     }
     Workspace reopened(root,true);
     Check(!fs::exists(root/"main.rice")&&reopened.project->ActiveScene()=="Scenes/Second.rice"&&
           reopened.project->SceneFiles()==std::vector<fs::path>{"Scenes/Second.rice"},
           "Reopening a named-scene-only project does not create or require main.rice");
-    Check(reopened.editor.scene->GetObjectCount()==1&&reopened.editor.scene->Find(objectID),
-          "Named scene remains intact after save and reopen");
+    Check(reopened.editor.scene->GetObjectCount()==6&&reopened.editor.scene->Find(objectID)->GetGroup()->name=="Board pieces"&&
+          reopened.editor.scene->Find(pieceID)->GetWorldMatrix()==pieceWorld,
+          "Reopening reuses renamed layers and preserves the model transform");
+    for(const auto& obj:reopened.editor.scene->GetObjects())
+        Check(obj->GetComponent<SceneLayer>()||obj->GetHierarchyParent(),"Previously loose objects in a layered scene also receive membership");
+}
+
+void CheckLayerPlacement() {
+    Scene scene;
+    auto& board=scene.CreateGameObject("Game");
+    scene.CreateGameObject("System Layer");
+    SceneLayers::Migrate(scene);
+    auto* layer=board.GetGroup();
+    Check(layer&&layer->name=="Game (1)"&&board.name=="Game","Generated game layers avoid authored object names");
+    layer->transform.position={5,8,-1};
+    layer->transform.rotation={0,45,20};
+    layer->transform.localScale={2,3,1};
+    auto& piece=scene.CreateGameObject("Piece");
+    piece.transform.position={2,3,4};
+    piece.transform.localScale={1,0,3};
+    const auto world=piece.GetWorldMatrix();
+    SceneLayers::Migrate(scene);
+    Check(piece.GetGroup()==layer&&piece.transform.localScale==Vector3(1,0,3),"Migration retains singular authored transforms");
+    const auto grouped=piece.GetWorldMatrix();
+    for(int c=0;c<4;++c)for(int r=0;r<4;++r)
+        Check(std::abs(grouped[c][r]-world[c][r])<.00001f,"A transformed destination layer preserves the world matrix");
+    scene.EachComponent<SceneLayer>([](SceneLayer& marker){marker.GetGameObject().SetActive(false);});
+    auto& added=scene.CreateGameObject("New piece");
+    SceneLayers::PlaceRoot(added,layer);
+    Check(added.GetGroup()&&added.IsActive()&&!layer->IsActive(),"New content remains visible when existing layers are inactive");
+}
+
+void CheckLayerObjectLimit() {
+    Scene scene;
+    for(size_t i=0;i<SceneCodec::MaxObjects;++i)scene.CreateGameObject("Legacy object",i+1);
+    SceneLayers::Migrate(scene);
+    ComponentRegistry registry;
+    SceneCodec codec(registry);
+    auto restored=codec.Decode(codec.Encode(scene));
+    Check(restored->GetObjectCount()==SceneCodec::MaxObjects+SceneCodec::DefaultLayerCount&&
+          !SceneCodec::FitsObjectLimit(*restored,1),"A full legacy scene round-trips with three layers and the same content limit");
+}
+
+void CheckLegacyLayerRoles() {
+    Scene original;
+    auto legacyLayer=[&](const char* name, EntityID id)->GameObject& {
+        auto& layer=original.CreateGameObject(name,id);
+        layer.isGroup=true;
+        layer.AddComponent<SceneLayer>();
+        return layer;
+    };
+    auto& oldSystem=legacyLayer("System Layer",35);
+    auto& oldUI=legacyLayer("UI",36);
+    legacyLayer("Layer 0",37);
+    legacyLayer("Layer 2",38);
+    auto& sun=original.CreateGameObject("Directional Light",40);
+    sun.SetGroup(&oldSystem,false);
+    sun.AddComponent<Light>().type=1;
+    auto& text=original.CreateGameObject("Custom",39);
+    text.SetGroup(&oldUI,false);
+    text.AddComponent<UIText>();
+    text.groupOffset=glm::translate(Matrix4(1),Vector3(3,2,1));
+    auto& board=original.CreateGameObject("ChessBoard",1);
+    board.isGroup=true;
+    board.SetGroup(&oldUI,false);
+    board.transform.position={2,3,4};
+    auto& rook=original.CreateGameObject("Rook1",2);
+    rook.SetParent(&board);
+    auto rookWorld=rook.GetWorldMatrix();
+    auto textWorld=text.GetWorldMatrix();
+
+    ComponentRegistry registry;
+    SceneCodec codec(registry);
+    auto encoded=codec.Encode(original);
+    const std::string roleLine="\"Role\" -1\n";
+    for(auto p=encoded.find(roleLine);p!=std::string::npos;p=encoded.find(roleLine))
+        encoded.erase(p,roleLine.size());
+    auto boardRecord=encoded.find("Object 1 0 \"ChessBoard\"");
+    Check(boardRecord!=std::string::npos,"Legacy ChessBoard fixture exists");
+    encoded.insert(encoded.find("EndObject",boardRecord),"Component \"Scene Layer\"\n\"Enabled\" 1\nEndComponent\n");
+    auto migrated=codec.Decode(encoded);
+    SceneLayers::Migrate(*migrated);
+    auto layers=SceneLayers::Ordered(*migrated);
+    Check(layers.size()==3&&layers[0]->GetID()==35&&layers[1]->GetID()==36&&layers[2]->GetID()==38&&
+          layers[0]->name=="System"&&layers[1]->name=="UI"&&layers[2]->name=="Game",
+          "Legacy layer roots retain their IDs and acquire the three ordered roles");
+    Check(layers[0]->IsRequiredLayer()&&layers[1]->IsRequiredLayer()&&!layers[2]->IsRequiredLayer(),
+          "Only System and UI are mandatory");
+    auto* model=migrated->Find(1);
+    Check(!model->GetComponent<SceneLayer>()&&!model->GetComponent<MeshRenderer>()&&model->GetGroup()==layers[2]&&
+          migrated->Find(2)->GetParent()==model&&migrated->Find(2)->GetWorldMatrix()==rookWorld,
+          "A nested legacy layer becomes an invisible Game object and retains its model children");
+    Check(migrated->Find(39)->GetGroup()==layers[2]&&migrated->Find(39)->GetWorldMatrix()==textWorld&&
+          migrated->Find(40)->GetGroup()==layers[2],
+          "All pre-existing content migrates to Game, including legacy UI and light objects");
+    migrated->Find(39)->SetGroup(layers[1]);
+    const auto canonical=codec.Encode(*migrated);
+    auto reopened=codec.Decode(canonical);
+    SceneLayers::Migrate(*reopened);
+    Check(codec.Encode(*reopened)==canonical,"Reopening a migrated scene preserves deliberate UI membership");
+
+    EditorSession editor(registry);
+    editor.scene=std::move(reopened);
+    editor.Select(35);
+    editor.Select(36,true);
+    editor.DeleteSelection();
+    Check(editor.Snapshot()==canonical,"Delete leaves a protected-only selection intact");
+    editor.Select(38,true);
+    editor.DeleteSelection();
+    Check(editor.scene->Find(35)&&editor.scene->Find(36)&&!editor.scene->Find(38),
+          "Mixed selection deletes only editable layers and their content");
+    SceneLayers::Migrate(*editor.scene);
+    Check(SceneLayers::Ordered(*editor.scene).size()==2,"Reopening respects a deleted Game layer");
+    auto& fresh=editor.scene->CreateGameObject();
+    SceneLayers::PlaceRoot(fresh);
+    Check(fresh.GetGroup()&&fresh.GetGroup()->name=="Game","Creating new content restores a game placement layer on demand");
 }
 
 void CheckScenesAndPrefabs(const fs::path& output) {
@@ -382,13 +528,13 @@ void CheckScenesAndPrefabs(const fs::path& output) {
     auto originalID=editor.scene->GetObjects().front()->GetID();
     editor.scene->Find(originalID)->transform.position={1,2,3};
     workspace.NewScene("Second");
-    Check(editor.scene->GetObjectCount()==0&&workspace.project->ActiveScene()=="Scenes/Second.rice","Create and select new scene");
+    Check(editor.scene->GetObjectCount()==3&&workspace.project->ActiveScene()=="Scenes/Second.rice","Create and select a new scene with its three empty layers");
     auto saved=Project(root,true).LoadScene(workspace.registry,"main.rice");
     Check(saved->Find(originalID)->transform.position==Vector3(1,2,3),"Scene transition saves outgoing edits");
     editor.scene->CreateGameObject("Second object");
     workspace.SwitchScene("main.rice");
-    Check(editor.scene->Find(originalID)&&editor.scene->GetObjectCount()==1,"Switch restores independent scene");
-    Check(Project(root,true).LoadScene(workspace.registry,"Scenes/Second.rice")->GetObjectCount()==1,"Second scene saved on switch");
+    Check(editor.scene->Find(originalID)&&editor.scene->GetObjectCount()==4,"Switch restores independent scene");
+    Check(Project(root,true).LoadScene(workspace.registry,"Scenes/Second.rice")->GetObjectCount()==4,"Second scene saved on switch");
     size_t projectFiles=0;
     for(const auto& f:fs::recursive_directory_iterator(root))
         if(f.is_regular_file()&&f.path().extension()==".rice")++projectFiles;
@@ -409,7 +555,8 @@ void CheckScenesAndPrefabs(const fs::path& output) {
     auto beforePrefab=editor.Snapshot();
     EntityID placedID=0;
     editor.Edit([&](Scene&){placedID=workspace.InstantiatePrefab("Reusable",{8,0,0}).GetID();});
-    Check(editor.scene->GetObjectCount()==2,"Editing places a persistent prefab instance");
+    Check(editor.scene->GetObjectCount()==5&&editor.scene->Find(placedID)->GetGroup()==editor.scene->Find(originalID)->GetGroup(),
+          "Editing places a persistent prefab instance in the default layer");
     auto afterPrefab=editor.Snapshot();
     editor.Undo();
     workspace.BindScene();
@@ -421,11 +568,13 @@ void CheckScenesAndPrefabs(const fs::path& output) {
           editor.scene->Find(placedID)->transform.position==Vector3(8,0,0),
           "Redo restores the prefab identity, hierarchy and position");
     EntityID recreatedID=0;
+    auto* selectedUI=SceneLayers::Ordered(*editor.scene)[1];
+    editor.Select(selectedUI->GetID());
     editor.Edit([&](Scene& restored){recreatedID=restored.InstantiatePrefab("Reusable",{9,0,0}).GetID();});
     auto* recreated=editor.scene->Find(recreatedID);
-    Check(recreated&&recreatedID!=placedID&&!recreated->IsPooled()&&recreated->transform.position==Vector3(9,0,0)&&
-          editor.scene->GetObjectCount()==3,
-          "Rebound scene callbacks create a fresh edit instance after Undo and Redo");
+    Check(recreated&&recreatedID!=placedID&&!recreated->IsPooled()&&recreated->GetGroup()==selectedUI&&recreated->transform.position==Vector3(9,0,0)&&
+          editor.scene->GetObjectCount()==6,
+          "Rebound scene callbacks place a fresh edit instance in the selected UI layer");
     editor.Undo();
     workspace.BindScene();
     Check(editor.Snapshot()==afterPrefab,"Recreated prefab placement has its own undo record");
@@ -454,7 +603,7 @@ void CheckScenesAndPrefabs(const fs::path& output) {
         workspace.Stop();
     }
     workspace.SwitchScene("main.rice");
-    Check(editor.scene->GetObjectCount()==1,"Pool cannot leak into another scene");
+    Check(editor.scene->GetObjectCount()==4,"Pool cannot leak into another scene");
     Check(!workspace.ReleasePrefab(SpawnOnStart::reused),"Old pooled handle cannot be released into another scene");
 
     workspace.SwitchScene("Scenes/Second.rice");
@@ -485,7 +634,7 @@ void CheckScenesAndPrefabs(const fs::path& output) {
     Project exportedProject(contents/"Project",true);
     Check(exportedProject.ActiveScene()=="Scenes/Second.rice"&&exportedProject.SceneFiles().size()==3,"Export retains scenes and active scene");
     Check(fs::is_regular_file(contents/"Project"/"Prefabs"/"Reusable.prefab"),"Export contains prefab assets");
-    Check(exportedProject.LoadScene(workspace.registry)->GetObjectCount()==1,"Exported active scene loads");
+    Check(exportedProject.LoadScene(workspace.registry)->GetObjectCount()==4,"Exported active scene and layers load");
 }
 }
 
@@ -500,6 +649,9 @@ int main(int argc,char** argv) {
         CheckSceneSettings(argv[1]);
         CheckPlayback(argv[1]);
         CheckNamedSceneOnly(argv[1]);
+        CheckLayerPlacement();
+        CheckLegacyLayerRoles();
+        CheckLayerObjectLimit();
         CheckScenesAndPrefabs(argv[1]);
         std::cout<<"Workspace scene transitions and pooled prefab integration passed\n";
         return 0;

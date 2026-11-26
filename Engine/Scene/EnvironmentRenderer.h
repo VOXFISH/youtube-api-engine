@@ -11,10 +11,18 @@ namespace Rice {
 class EnvironmentRenderer {
     Ref<Shader> shader;
 public:
-    void Draw(Scene& scene,const Camera& camera,const Ref<VertexArray>& quad,bool guides,const ShadowMaps* shadows=nullptr){
+    void Draw(const Scene& scene,const Camera& camera,const Ref<VertexArray>& quad,bool guides,const ShadowMaps* shadows=nullptr){
         const auto& s=scene.settings;
-        bool sky=s.skybox&&scene.skyboxTexture;
-        if(!sky&&!s.ground&&!guides)return;
+        DrawLayers(camera,quad,s.skybox?scene.skyboxTexture:nullptr,s.ground,
+                   guides?s.axes:Vector3(0),guides?s.grids:Vector3(0),shadows);
+    }
+    void DrawSkybox(const Ref<Texture2D>& sky,const Camera& camera,const Ref<VertexArray>& quad){
+        DrawLayers(camera,quad,sky,false,Vector3(0),Vector3(0),nullptr);
+    }
+private:
+    void DrawLayers(const Camera& camera,const Ref<VertexArray>& quad,const Ref<Texture2D>& sky,
+                    bool ground,Vector3 axes,Vector3 grids,const ShadowMaps* shadows){
+        if(!sky&&!ground&&axes==Vector3(0)&&grids==Vector3(0))return;
         if(!shader)shader=Ref<Shader>(Shader::Create(R"(#version 330 core
 layout(location=0) in vec3 position;
 out vec2 screen;
@@ -114,9 +122,9 @@ void main(){
             ShadowMaps::SetSamplerUnits(shader);
             shader->SetUniformInt("shadowLightCount",0);shader->SetUniformInt("groundLightCount",0);
         }
-        shader->SetUniformInt("skyEnabled",sky);shader->SetUniformInt("groundEnabled",s.ground);shader->SetUniformInt("skyImage",0);
-        shader->SetUniformFloat3("axes",guides?s.axes:Vector3(0));shader->SetUniformFloat3("grids",guides?s.grids:Vector3(0));
-        if(sky){scene.skyboxTexture->Bind(0);shader->SetUniformInt("skyLayout",int(DetectCubemapLayout(scene.skyboxTexture->GetWidth(),scene.skyboxTexture->GetHeight())));}
+        shader->SetUniformInt("skyEnabled",bool(sky));shader->SetUniformInt("groundEnabled",ground);shader->SetUniformInt("skyImage",0);
+        shader->SetUniformFloat3("axes",axes);shader->SetUniformFloat3("grids",grids);
+        if(sky){sky->Bind(0);shader->SetUniformInt("skyLayout",int(DetectCubemapLayout(sky->GetWidth(),sky->GetHeight())));}
         RenderCommand::DrawIndexed(quad);
         glDepthFunc(depthFunction);glDepthMask(depthWrite);if(!depthTest)glDisable(GL_DEPTH_TEST);if(cull)glEnable(GL_CULL_FACE);
     }

@@ -103,7 +103,7 @@ EntityID Workspace::ImportFbx(const fs::path& source) {
     const auto input=fs::canonical(source);
     auto parts=ReadFbx(input);
     if (parts.empty()) throw std::runtime_error("The FBX has no importable mesh");
-    if (editor.scene->GetObjectCount()+parts.size()+1>10000)
+    if (!SceneCodec::FitsObjectLimit(*editor.scene,parts.size()+1))
         throw std::runtime_error("Import would exceed the scene limit of 10,000 objects");
     ImportFiles files(project->assets.Root());
     auto& scene=*editor.scene;
@@ -136,6 +136,7 @@ EntityID Workspace::ImportFbx(const fs::path& source) {
         editor.Edit([&](Scene& current) {
             auto& root=current.CreateGameObject(ProjectFile::Utf8(input.stem()));
             rootId=root.GetID();
+            SceneLayers::PlaceRoot(root,current.Find(editor.selected));
             std::vector<GameObject*> objects;
             objects.reserve(parts.size());
             for (size_t i=0;i<parts.size();++i) {

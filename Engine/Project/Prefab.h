@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SceneCodec.h"
+#include "SceneLayers.h"
 #include <memory>
 #include <queue>
 #include <unordered_map>
@@ -34,6 +35,14 @@ class PrefabAsset {
                     throw std::runtime_error("Unknown or duplicate prefab component: "+component.type);
                 component.type=type->name;
             }
+            std::erase_if(node.components,[&](const ComponentSnapshot& component){
+                if(component.type!="Scene Layer")return false;
+                SceneLayer layer;
+                component.ReadInto(*registry.Find(component.type),layer);
+                // Older prefabs could mark content groups as layers. Retain the
+                // group and its children, and only instantiate explicit game-layer roots.
+                return node.parent||node.group||!node.isGroup||layer.role!=SceneLayer::Game;
+            });
         }
         if(nodes.front().parent||nodes.front().group)throw std::runtime_error("Prefab root must be detached");
         std::vector<size_t> waiting(nodes.size());
@@ -87,6 +96,7 @@ public:
         RICE_BENCHMARK_FUNCTION();
         auto* root=scene.Find(rootID);
         if(!root||root->IsPoolAvailable())throw std::invalid_argument("Select an available scene object to save as a prefab");
+        if(root->IsRequiredLayer())throw std::invalid_argument("Required layers cannot be saved as prefabs");
         auto asset=std::make_shared<PrefabAsset>();
         auto capture=[&](GameObject& object){
             RICE_BENCHMARK_FUNCTION();
@@ -172,7 +182,7 @@ public:
         for(auto* object:targets){object->SetParent(nullptr);object->SetGroup(nullptr,false);}
         for(size_t i=0;i<nodes.size();++i){
             const auto& node=nodes[i];auto& object=*targets[i];
-            object.name=node.name;object.transform=node.transform;object.activeSelf=node.active;object.isGroup=node.isGroup;
+            object.name=scene.UniqueObjectName(node.name,&object);object.transform=node.transform;object.activeSelf=node.active;object.isGroup=node.isGroup;
             object.previousGroup=node.previousGroup&&indices.contains(node.previousGroup)?objects[indices.at(node.previousGroup)]:0;
             object.groupOffset=node.offset;object.groupParentBind=node.bind;object.groupCommonBind=node.common;
             ComponentSnapshot::Restore(object,node.components,registry);
@@ -365,6 +375,9 @@ public:
         instance.available=false;instance.busy=true;
         try{
             if(!created){RemoveAdditions(scene,instance);asset->Restore(scene,instance.objects,registry,position,true);}
+            // Restoration detaches the root on every acquire. Bind its game layer
+            // before scripts observe the instance or activation makes it visible.
+            if(auto* root=scene.Find(found->first))SceneLayers::PlaceRoot(*root);
             for(auto id:instance.objects){
                 auto* object=scene.Find(id);
                 if(!object)throw std::runtime_error("Prefab was destroyed by its acquire callback");

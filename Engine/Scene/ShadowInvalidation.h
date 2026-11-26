@@ -11,6 +11,7 @@ public:
         EntityID id=0;
         SpatialBounds bounds;
         size_t begin=0,end=0,textureBegin=0,textureEnd=0;
+        bool moving=false;
     };
     struct Snapshot {
         std::vector<uint64_t> data;
@@ -23,6 +24,7 @@ private:
     uint64_t scene=0;
     bool selective=true,previousSelective=true,changed=false;
     std::array<uint64_t,8> revisions{};
+    std::array<DirectionalShadowGroup,2> groups;
     Stats stats;
     SpatialBVH changes;
     static bool Valid(const SpatialBounds& box){
@@ -47,15 +49,20 @@ private:
 public:
     void SetSelectiveEnabled(bool enabled){selective=enabled;}
     const auto& Revisions()const{return revisions;}
+    const auto& DirectionalGroups()const{return groups;}
     const Stats& GetStats()const{return stats;}
     bool Changed()const{return changed;}
     void Update(uint64_t sceneID,Snapshot next,const std::vector<ShadowLight>& lights){
         stats={};changed=false;
         bool forceAll=scene!=sceneID||selective!=previousSelective;
         std::vector<SpatialBounds> dirtyBounds;
-        auto add=[&](const SpatialBounds& bounds){
-            if(!Valid(bounds)){forceAll=true;return;}
-            dirtyBounds.push_back(bounds);
+        const bool directional=std::any_of(lights.begin(),lights.end(),[](const auto& light){return light.castsShadow&&light.type==1;});
+        for(auto& group:groups){group.bounds.clear();group.changes.clear();}
+        if(directional)for(const auto& caster:next.casters)groups[caster.moving].bounds.push_back(caster.bounds);
+        auto add=[&](const Caster& caster){
+            if(!Valid(caster.bounds)){forceAll=true;return;}
+            dirtyBounds.push_back(caster.bounds);
+            if(directional)groups[caster.moving].changes.push_back(caster.bounds);
         };
         if(!selective){
             // Benchmark/control path retains the previous global comparison.
@@ -82,17 +89,21 @@ public:
                 }
                 if(old<previous.casters.size()){
                     seen[old]=true;
-                    if(Same(next,current,previous,previous.casters[old]))continue;
-                    add(previous.casters[old].bounds);
+                    if(current.moving==previous.casters[old].moving&&Same(next,current,previous,previous.casters[old]))continue;
+                    add(previous.casters[old]);
                 }
-                ++stats.changedCasters;add(current.bounds);
+                ++stats.changedCasters;add(current);
             }
             for(size_t i=0;i<previous.casters.size();++i)if(!seen[i]){
-                ++stats.changedCasters;add(previous.casters[i].bounds);
+                ++stats.changedCasters;add(previous.casters[i]);
             }
             changed=forceAll||stats.changedCasters!=0;
         }
         stats.changedBounds=dirtyBounds.size();
+        for(auto& group:groups){
+            if(forceAll||!group.changes.empty())++group.revision;
+            if(forceAll)group.changes.clear();
+        }
         const size_t count=std::min(lights.size(),revisions.size());
         bool needTree=false;
         for(size_t i=0;i<count;++i)needTree=needTree||(lights[i].castsShadow&&lights[i].type==0);

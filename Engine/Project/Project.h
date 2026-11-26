@@ -3,6 +3,7 @@
 #include "Installation.h"
 #include "ProjectFile.h"
 #include "SceneCodec.h"
+#include "SceneLayers.h"
 #include "Scripting/NativeScriptCompiler.h"
 
 namespace Rice {
@@ -250,15 +251,7 @@ public:
         scene.settings.grids = {0, 0, 1}; // XY, YZ, XZ
         scene.settings.axes = Vector3(1);
 
-        auto createLayer = [&](const char* name) -> GameObject& {
-            auto& layer = scene.CreateGameObject(name);
-            layer.isGroup = true;
-            layer.AddComponent<SceneLayer>();
-            return layer;
-        };
-        auto& system = createLayer("System Layer");
-        for (const char* name : {"Layer 0", "Layer 1", "Layer 2"}) createLayer(name);
-
+        auto& system = SceneLayers::CreateDefaults(scene);
         auto& sun = scene.CreateGameObject("Directional Light");
         sun.SetGroup(&system, false);
         sun.AddComponent<Light>().type = 1;
@@ -269,7 +262,9 @@ public:
     Scope<Scene> LoadScene(ComponentRegistry& registry, const fs::path& key) const {
         auto found = data.scenes.find(key);
         if (found == data.scenes.end()) throw std::runtime_error("Scene does not exist in this project");
-        return SceneCodec(registry).Decode(found->second);
+        auto scene = SceneCodec(registry).Decode(found->second);
+        SceneLayers::Migrate(*scene);
+        return scene;
     }
     Scope<Scene> LoadScene(ComponentRegistry& registry) const { return LoadScene(registry, ActiveScene()); }
     std::vector<fs::path> SceneFiles() const {
@@ -335,7 +330,7 @@ public:
         SceneCodec codec(registry);
         for (const auto& [key, text] : data.scenes) {
             if (key == packaged.activeScene) continue;
-            auto scene = codec.Decode(text);
+            auto scene = LoadScene(registry, key);
             ValidateAssets(*scene);
             packaged.scenes.emplace(key, codec.Encode(*scene, false));
         }

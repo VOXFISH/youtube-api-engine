@@ -6,6 +6,7 @@
 #include "Renderer/RenderCommand.h"
 #include "Project/SceneCodec.h"
 #include <array>
+#include <initializer_list>
 #include <iostream>
 using namespace Rice;
 void Check(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
@@ -105,10 +106,17 @@ static void CheckReflectionImageGeometry(SceneRenderer& renderer,ViewportTarget&
 }
 class TestSkyTexture : public Texture2D {
     GLuint texture=0;
+    uint32_t width;
 public:
-    TestSkyTexture(){glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);unsigned char pixel[]={30,80,160,255};glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,pixel);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);}
+    explicit TestSkyTexture(std::initializer_list<std::array<unsigned char,4>> pixels={{30,80,160,255}})
+        : width(static_cast<uint32_t>(pixels.size())){
+        glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,width,1,0,GL_RGBA,GL_UNSIGNED_BYTE,pixels.begin());
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    }
     ~TestSkyTexture(){glDeleteTextures(1,&texture);}
-    uint32_t GetWidth()const override{return 1;}uint32_t GetHeight()const override{return 1;}
+    uint32_t GetWidth()const override{return width;}uint32_t GetHeight()const override{return 1;}
     void Bind(uint32_t slot)const override{glActiveTexture(GL_TEXTURE0+slot);glBindTexture(GL_TEXTURE_2D,texture);}
 };
 static void CheckReflectionModes(SceneRenderer& renderer,ViewportTarget& target){
@@ -186,6 +194,45 @@ static void CheckReflectionModes(SceneRenderer& renderer,ViewportTarget& target)
     auto off=sample();
     Check(off[0]==direct[0]&&mixed[1][0]>off[1][0]+20&&direct[1][2]>off[1][2]+80,
           "Off disables receiving; an Off marker is still captured and visible in the precise reflection");
+
+    // Move the marker onto the probe's parallel ray. The reflected ray from the
+    // right mirror now misses it and looks into the +Z (green) face of the sky.
+    marker.TranslateWorld({-.96f,0,0});
+    const std::initializer_list<Pixel> skyFaces{
+        {90,0,0,255},{0,0,90,255},{120,0,120,255},{90,90,0,255},{15,175,30,255},{30,80,160,255}};
+    scene.skyboxTexture=CreateRef<TestSkyTexture>(skyFaces);
+    right.GetComponent<MeshRenderer>()->reflectionMode=int(ReflectionMode::Direct);
+    probe.maxObjectSize=0;
+    auto blocked=sample();
+    Check(blocked[1][0]>blocked[1][2]+20,"The offset probe sees the red marker along the direct sampling direction");
+    probe.maxObjectSize=5000;
+    right.GetComponent<MeshRenderer>()->reflectionMode=int(ReflectionMode::Precise);
+    auto skyMiss=sample();
+    Check(skyMiss[1][1]>skyMiss[1][0]+100&&skyMiss[1][1]>skyMiss[1][2]+100,
+          "A precise miss reflects the sky face along the mirror ray even when the probe sees geometry");
+    scene.settings.skybox=false;
+    auto disabledSky=sample();
+    Check(disabledSky[0]==off[1]&&disabledSky[1]==off[1],
+          "Turning off the sky removes its reflection from cached direct and precise receivers");
+    scene.settings.skybox=true;
+    Check(sample()==skyMiss,"Turning the sky back on restores its reflection");
+    scene.skyboxTexture=CreateRef<TestSkyTexture>();
+    auto replacedSky=sample();
+    Check(replacedSky[0]==direct[0]&&replacedSky[1]==direct[1],
+          "Replacing the sky updates cached direct and precise reflections");
+
+    // The +Z face spans the blue/black boundary of this panorama. The right
+    // mirror points into the blue half, while its coarsest mip averages both.
+    const std::initializer_list<Pixel> panorama{
+        {0,0,0,255},{0,0,0,255},{0,0,200,255},{0,0,0,255}};
+    scene.skyboxTexture=CreateRef<TestSkyTexture>(panorama);
+    auto smooth=sample();
+    right.GetComponent<Material>()->roughness=1;
+    auto rough=sample();
+    Check(smooth[1][2]>rough[1][2]+40&&rough[1][2]>off[1][2]+40,
+          "Rough precise reflections filter the sky panorama across its color boundary");
+    Check(renderer.GetSpatialStats().captureFaces==0,"An unchanged sky reuses the small receiver's probe");
+    right.GetComponent<MeshRenderer>()->reflectionMode=int(ReflectionMode::Off);
 
     ComponentRegistry registry;SceneCodec codec(registry);
     auto encoded=codec.Encode(scene);

@@ -75,6 +75,11 @@ struct Light : Component {
     Vector3 WorldPosition()const{ RICE_BENCHMARK_FUNCTION(); return Vector3(GetGameObject().GetWorldMatrix()[3]);}
     Vector3 WorldDirection()const{ RICE_BENCHMARK_FUNCTION(); auto value=GetGameObject().GetWorldRotation()*direction;return glm::length(value)>.0001f?glm::normalize(value):Vector3(0,-1,0);}
 };
+struct Rigidbody : Component {
+    Vector3 velocity{0};
+    float mass=1,restitution=0;
+    bool useGravity=true,kinematic=false;
+};
 class SceneRenderer {
 public:
     void SetShadowsEnabled(bool enabled){shadowsEnabled=enabled;}
@@ -103,13 +108,21 @@ private:
     std::vector<ShadowLight> preparedLights;
     ShadowInvalidation shadowInvalidation;
     std::vector<uint64_t> lightingStamp;
-    uint64_t shadowReflectionVersion=0;
-    std::map<EntityID,uint64_t> reflectionShadowVersions;
+    uint64_t reflectionVersion=0;
+    std::map<EntityID,uint64_t> capturedVersions;
     Ref<Shader> shadowShader;
     static IntVector2 ShadowOwner(EntityID id){
         return {std::bit_cast<int32_t>(uint32_t(id)),std::bit_cast<int32_t>(uint32_t(id>>32))};
     }
-    void DrawShadow(const Matrix4& vp,int layer,bool otherCasters){
+    std::vector<bool> physicsShadowCasters;
+    static bool PhysicsMoves(const GameObject& object){
+        if(auto* body=object.GetComponent<Rigidbody>();body&&body->enabled&&
+           ((!body->kinematic&&body->useGravity)||body->velocity!=Vector3(0)))return true;
+        auto* parent=object.GetParent();
+        auto* group=object.GetGroup();
+        return (parent&&PhysicsMoves(*parent))||(group&&group!=parent&&PhysicsMoves(*group));
+    }
+    void DrawShadow(const Matrix4& vp,const Matrix4& cullVP,int layer,int group,bool otherCasters){
         if(!shadowShader)shadowShader=Ref<Shader>(Shader::Create(R"(#version 330 core
 layout(location=0) in vec3 position;layout(location=1) in vec3 normal;layout(location=2) in vec2 uv;
 layout(location=3) in mat4 instanceWorld;layout(location=7) in vec4 instanceColor;layout(location=8) in ivec2 instanceOwner;
@@ -138,10 +151,11 @@ void main(){
         shadowShader->SetUniformInt("otherCasters",otherCasters);
         std::vector<size_t> visible;
         shadowDrawStats.candidates+=shadowCasterCount;
-        if(shadowCullingEnabled)spatialCache.Tree().QueryFrustum(vp,[&](size_t i){visible.push_back(i);});
+        if(shadowCullingEnabled)spatialCache.Tree().QueryFrustum(cullVP,[&](size_t i){visible.push_back(i);});
         else for(size_t i=0;i<spatialCache.Entries().size();++i)visible.push_back(i);
         std::vector<CubeInstance> instances;
         for(size_t i:visible){
+            if(group>=0&&physicsShadowCasters[i]!=bool(group))continue;
             const auto& entry=spatialCache.Entries()[i];auto& object=*entry.object;
             if(!glm::all(glm::greaterThan(glm::abs(object.transform.localScale),Vector3(.00001f))))continue;
             auto* mesh=object.GetComponent<MeshRenderer>();auto* sprite=object.GetComponent<SpriteRenderer>();
@@ -203,13 +217,14 @@ void main(){
         auto& stamp=snapshot.data;auto& textures=snapshot.textures;
         auto scalar=[&](float value){stamp.push_back(std::bit_cast<uint32_t>(value));};
         auto texture=[&](const Ref<Texture2D>& value){stamp.push_back(reinterpret_cast<uintptr_t>(value.get()));if(value)textures.push_back(value);};
-        SpatialBounds bounds{Vector3(-1),Vector3(1)};bool haveBounds=false;
+        physicsShadowCasters.clear();
+        const bool directional=std::any_of(preparedLights.begin(),preparedLights.end(),[](const auto& light){return light.castsShadow&&light.type==1;});
         if(active){
             stamp.reserve(scene.GetObjects().size()*32);snapshot.casters.reserve(scene.GetObjects().size());
             PrepareCaptureScene(scene);
             for(const auto& entry:spatialCache.Entries()){
                 auto& object=*entry.object;
-                if(!haveBounds){bounds=entry.bounds;haveBounds=true;}else{bounds.low=glm::min(bounds.low,entry.bounds.low);bounds.high=glm::max(bounds.high,entry.bounds.high);}
+                physicsShadowCasters.push_back(directional&&PhysicsMoves(object));
                 auto* mesh=object.GetComponent<MeshRenderer>();auto* sprite=object.GetComponent<SpriteRenderer>();
                 bool scaled=glm::all(glm::greaterThan(glm::abs(object.transform.localScale),Vector3(.00001f)));
                 bool meshCast=scaled&&mesh&&mesh->enabled&&mesh->castsShadow&&mesh->color.a>=.1f;
@@ -217,6 +232,8 @@ void main(){
                 if(meshCast)++shadowCasterCount;if(spriteCast)++shadowCasterCount;
                 if(!meshCast&&!spriteCast)continue;
                 ShadowInvalidation::Caster caster{entry.id,entry.bounds,stamp.size(),0,textures.size(),0};
+                caster.moving=physicsShadowCasters.back();
+                stamp.push_back(caster.moving);
                 stamp.push_back(entry.id);for(int c=0;c<4;++c)for(int r=0;r<4;++r)scalar(entry.world[c][r]);
                 for(int a=0;a<3;++a)scalar(object.transform.localScale[a]);
                 for(int a=0;a<3;++a){scalar(entry.bounds.low[a]);scalar(entry.bounds.high[a]);}
@@ -232,15 +249,15 @@ void main(){
             }
         }
         shadowInvalidation.Update(scene.GetInstanceID(),std::move(snapshot),preparedLights);
-        shadowMaps.Update(scene.GetInstanceID(),preparedLights,bounds,shadowInvalidation.Revisions(),
-            [&](size_t,int,const Matrix4& vp,int layer,bool otherCasters){DrawShadow(vp,layer,otherCasters);});
+        shadowMaps.Update(scene.GetInstanceID(),preparedLights,shadowInvalidation.DirectionalGroups(),shadowInvalidation.Revisions(),
+            [&](const Matrix4& vp,const Matrix4& cullVP,int layer,int group,bool otherCasters){DrawShadow(vp,cullVP,layer,group,otherCasters);});
         std::vector<uint64_t> lighting{scene.GetInstanceID(),uint64_t(shadowsEnabled)};
         for(const auto& light:preparedLights){
             lighting.push_back(light.id);lighting.push_back(light.type);lighting.push_back(light.castsShadow);
             for(auto v:{light.position,light.direction,light.color})for(int i=0;i<3;++i)lighting.push_back(std::bit_cast<uint32_t>(v[i]));
             lighting.push_back(std::bit_cast<uint32_t>(light.range));
         }
-        if(lighting!=lightingStamp||shadowMaps.GetStats().updates||shadowInvalidation.Changed()){++shadowReflectionVersion;lightingStamp=std::move(lighting);}
+        if(lighting!=lightingStamp||shadowMaps.GetStats().updates||shadowInvalidation.Changed()){++reflectionVersion;lightingStamp=std::move(lighting);}
     }
     bool spatialCullingEnabled=true;
     SceneSpatialCache spatialCache;
@@ -270,6 +287,23 @@ void main(){
         capturePrepared=true;
     }
     EnvironmentRenderer environment;
+    Ref<Texture2D> reflectionSkybox;
+    Scope<ReflectionCubemap> skyCubemap;
+    int skyCaptureResolution=0;
+    void PrepareReflectionSky(const Ref<Texture2D>& sky,int resolution){
+        if(sky!=reflectionSkybox){
+            reflectionSkybox=sky;
+            skyCubemap.reset();
+            skyCaptureResolution=0;
+            ++reflectionVersion;
+        }
+        if(!sky||resolution<=skyCaptureResolution)return;
+        if(!skyCubemap)skyCubemap=CreateScope<ReflectionCubemap>();
+        skyCubemap->Capture(Vector3(0),resolution,0,[&](const Camera& face){
+            environment.DrawSkybox(sky,face,quad);
+        });
+        skyCaptureResolution=resolution;
+    }
     std::map<EntityID,Scope<DynamicReflection>> reflections;
     uint64_t reflectionScene=0;
     struct ReflectionGeometry {
@@ -516,8 +550,8 @@ uniform int useMaterial, unlit, shapeHighlight;
 uniform int useReflection, flatReflection, preciseReflection;
 uniform vec4 flatReflectionPlane;
 )" )+ReflectionIntersectionGLSL+ShadowSamplingGLSL+R"(
-uniform samplerCube environmentMap;
-uniform float reflectionMaxLod;
+uniform samplerCube environmentMap,reflectionSkyMap;
+uniform float reflectionMaxLod,skyMaxLod;
 )"+MaterialUVGLSL+R"(
 uniform float metallicity, roughness;
 uniform vec3 cameraPosition;
@@ -571,10 +605,15 @@ if(useMaterial==1 && useReflection==1){
     float nv=clamp(dot(reflectionNormal,V),0.0,1.0);
     vec3 fresnel=f0+(1.0-f0)*pow(1.0-nv,5.0);
     vec3 direction=reflect(-V,reflectionNormal);
-    if(preciseReflection==1)direction=correctedReflectionDirection(reflectionOrigin,direction);
+    vec3 probeDirection=preciseReflection==1?correctedReflectionDirection(reflectionOrigin,direction):direction;
     vec3 environment=vec3(0);
-    if(dot(direction,direction)>.00001)
-        environment=textureLod(environmentMap,direction,roughness*reflectionMaxLod).rgb;
+    if(dot(probeDirection,probeDirection)>.00001)
+        environment=textureLod(environmentMap,probeDirection,roughness*reflectionMaxLod).rgb;
+    else if(preciseReflection==1 && skyMaxLod>=0.0 && dot(direction,direction)>.00001){
+        // The ray missed the scene. Objects visible only from the probe cannot occlude this sky.
+        float lod=skyMaxLod-(1.0-roughness)*reflectionMaxLod;
+        environment=textureLod(reflectionSkyMap,direction,lod).rgb;
+    }
     light+=environment*fresnel;
 }
 result=vec4(light,c.a);}
@@ -589,7 +628,7 @@ result=vec4(light,c.a);}
         shader->SetUniformInt("unlit",lightingSource?0:1);shader->SetUniformInt("sprite",0);
         shader->SetUniformInt("useShapeWorld",lightingSource?1:0);shader->SetUniformInt("shapeHighlight",0);
         ShadowMaps::SetSamplerUnits(shader);shader->SetUniformInt("shadowLightCount",0);
-        shader->SetUniformInt("environmentMap",1);shader->SetUniformInt("reflectionGeometry",2);
+        shader->SetUniformInt("environmentMap",1);shader->SetUniformInt("reflectionGeometry",2);shader->SetUniformInt("reflectionSkyMap",5);
         shader->SetUniformInt("useMaterial",0);shader->SetUniformInt("useReflection",0);
         shader->SetUniformInt("cubeLayout",0);
         if(lightingSource){
@@ -647,7 +686,7 @@ result=vec4(light,c.a);}
         if(!capturing){
             if(reflectionScene!=scene.GetInstanceID()){
                 reflections.clear();
-                reflectionShadowVersions.clear();
+                capturedVersions.clear();
                 reflectionScene=scene.GetInstanceID();
             }
             for(auto& object:scene.GetObjects())if(object->IsActive()){
@@ -661,7 +700,8 @@ result=vec4(light,c.a);}
                     return probe->GetGameObject().GetID()==entry.first;
                 });
             });
-            std::erase_if(reflectionShadowVersions,[&](const auto& entry){return !reflections.contains(entry.first);});
+            std::erase_if(capturedVersions,[&](const auto& entry){return !reflections.contains(entry.first);});
+            int skyResolution=0;
             scene.EachComponent<MeshRenderer>([&](MeshRenderer& mesh) {
                 auto& object = mesh.GetGameObject();
                 if (probes.empty() || !mesh.enabled || mesh.reflectionMode==int(ReflectionMode::Off) ||
@@ -681,8 +721,11 @@ result=vec4(light,c.a);}
                 if(mesh.shape==int(BasicShape::Circle)||mesh.shape==int(BasicShape::Rectangle)){low.z=0;high.z=0;}
                 if(mesh.shape==int(BasicShape::Custom))std::tie(low,high)=*mesh.GeometryBounds();
                 float size=ReflectionPixelSize(world,camera.GetVPMatrix(),Vector2(viewport[2],viewport[3]),low,high);
-                receivers.emplace(object.GetID(),Receiver{selected,size,mesh.reflectionMode!=int(ReflectionMode::Direct)});
+                bool precise=mesh.reflectionMode!=int(ReflectionMode::Direct);
+                receivers.emplace(object.GetID(),Receiver{selected,size,precise});
+                if(selected&&precise&&size>0)skyResolution=std::max(skyResolution,std::clamp(selected->resolution,16,2048));
             });
+            PrepareReflectionSky(scene.settings.skybox&&!probes.empty()?scene.skyboxTexture:nullptr,skyResolution);
             std::optional<ReflectionGeometry> geometry;
             for(auto* probe:probes){
                 auto id=probe->GetGameObject().GetID();
@@ -696,7 +739,7 @@ result=vec4(light,c.a);}
                 if(!visible)continue;
                 auto& reflection=reflections[id];
                 if(!reflection)reflection=CreateScope<DynamicReflection>();
-                bool needsUpdate=large||reflection->SettingsChanged(*probe,precise)||reflectionShadowVersions[id]!=shadowReflectionVersion;
+                bool needsUpdate=large||reflection->SettingsChanged(*probe,precise)||capturedVersions[id]!=reflectionVersion;
                 if(!needsUpdate)continue;
                 PrepareCaptureScene(scene);
                 if(precise){
@@ -709,7 +752,7 @@ result=vec4(light,c.a);}
                     struct CaptureScope {unsigned& depth;CaptureScope(unsigned& value):depth(value){++depth;}~CaptureScope(){--depth;}} scope(captureDepth);
                     Render(scene,captureCamera,true,id);
                 });
-                reflectionShadowVersions[id]=shadowReflectionVersion;
+                capturedVersions[id]=reflectionVersion;
             }
         }
         environment.Draw(scene,camera,quad,editorGuides&&!capturing,&shadowMaps);
@@ -725,6 +768,15 @@ result=vec4(light,c.a);}
         BindSceneLights();
         shader->SetUniformInt("environmentMap",1);
         shader->SetUniformInt("reflectionGeometry",2);
+        shader->SetUniformInt("reflectionSkyMap",5);
+        if(!capturing){
+            shader->SetUniformFloat("skyMaxLod",skyCubemap?float(skyCubemap->MipLevels()-1):-1.f);
+            if(skyCubemap){
+                GLint active;
+                glGetIntegerv(GL_ACTIVE_TEXTURE,&active);
+                glActiveTexture(GL_TEXTURE5);glBindTexture(GL_TEXTURE_CUBE_MAP,skyCubemap->Texture());glActiveTexture(active);
+            }
+        }
         shader->SetUniformFloat3("cameraPosition",camera.GetPosition());
         CubeMaterial pendingMaterial;
         std::vector<GameObject*> viewObjects;

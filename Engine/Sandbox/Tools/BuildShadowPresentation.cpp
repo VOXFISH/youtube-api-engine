@@ -73,6 +73,7 @@ int main(int argc,char** argv){GLFWwindow* window=nullptr;try{
     demo.source=lamp.GetID();demo.steve=steve.GetID();demo.cube=metal.GetID();demo.status=status.GetID();demo.oldBoundsGroup=oldBox.GetID();demo.currentBoundsGroup=currentBox.GetID();
     demo.autoMotion=true;demo.warmupSeconds=3;demo.moveSeconds=2;demo.holdSeconds=3;demo.offset={1.05f,.25f,-.15f};
     Project project(root);
+    SceneLayers::Migrate(scene);
     project.SaveScene(scene,registry,project.ActiveScene());
     auto decoded=Project(project.FilePath(),true).LoadScene(registry);
     if(decoded->GetObjectCount()!=scene.GetObjectCount())throw std::runtime_error("Scene round-trip count mismatch");

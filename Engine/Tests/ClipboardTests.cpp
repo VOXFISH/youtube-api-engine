@@ -35,6 +35,28 @@ int main(){try{
     ComponentRegistry registry;EditorSession editor(registry);EditorClipboard clipboard;
     {
         Scene scene;
+        auto& base=scene.CreateGameObject();
+        auto& numbered=scene.CreateGameObject();
+        Check(base.name=="New Object"&&numbered.name=="New Object (1)","Default object names are numbered on collision");
+        SceneCodec codec(registry);
+        auto& next=codec.Duplicate(scene,numbered.GetID());
+        Check(next.name=="New Object (2)","Duplicating a numbered copy continues its series");
+        Check(scene.UniqueObjectName(numbered.name,&numbered)==numbered.name,"Renaming ignores the object's current name");
+        scene.Destroy(numbered.GetID());
+        Check(scene.CreateGameObject().name=="New Object (1)","A removed suffix becomes available again");
+        next.name=base.name;
+        auto restored=codec.Decode(codec.Encode(scene));
+        Check(restored->Find(next.GetID())->name==base.name,"Scene loading preserves pre-existing duplicate names");
+        auto& system=scene.CreateGameObject("System");
+        system.isGroup=true;system.AddComponent<SceneLayer>().role=SceneLayer::System;
+        EditorClipboard protectedClipboard;protectedClipboard.CopyObject(scene,system.GetID(),registry);
+        Check(!protectedClipboard.HasObjects(),"Required layers cannot enter the object clipboard");
+        bool rejected=false;
+        try{codec.Duplicate(scene,system.GetID());}catch(const std::invalid_argument&){rejected=true;}
+        Check(rejected,"Duplicate cannot create another required layer");
+    }
+    {
+        Scene scene;
         auto& target=scene.CreateGameObject("Legacy clipboard target");
         ComponentSnapshot::Apply(target,{{"Rigidbody","0\n1 2 3\n7\n0.25\n0\n1\n"}},registry);
         auto* body=target.GetComponent<Rigidbody>();
@@ -48,11 +70,12 @@ int main(){try{
     auto& child=editor.scene->CreateGameObject("child");child.SetParent(&obj);child.AddComponent<Rigidbody>().mass=7;
     editor.selected=sourceID;clipboard.CopyObject(*editor.scene,sourceID,registry);light.intensity=99;
     auto copyID=clipboard.PasteObject(editor,registry);auto* copy=editor.scene->Find(copyID);
-    Check(copyID!=sourceID&&copy->name=="source","Fresh identity and name");Check(copy->GetParent()->GetID()==parentID,"Parent preserved");Check(glm::length(Vector3(copy->GetWorldMatrix()[3])-originalWorld)<.0001f,"Same position");Check(copy->GetComponent<Light>()->intensity==3.1415927f&&!copy->GetComponent<Light>()->enabled,"Snapshot preserves exact values and enabled");
-    bool foundChild=false;for(auto& node:editor.scene->GetObjects())if(node->GetParent()==copy)foundChild=node->GetComponent<Rigidbody>()->mass==7;Check(foundChild,"Subtree paste");
+    Check(copyID!=sourceID&&copy->name=="source (1)","Pasted object gets a fresh ID and numbered name");Check(copy->GetParent()->GetID()==parentID,"Parent preserved");Check(glm::length(Vector3(copy->GetWorldMatrix()[3])-originalWorld)<.0001f,"Same position");Check(copy->GetComponent<Light>()->intensity==3.1415927f&&!copy->GetComponent<Light>()->enabled,"Snapshot preserves exact values and enabled");
+    bool foundChild=false;for(auto& node:editor.scene->GetObjects())if(node->GetParent()==copy)foundChild=node->name=="child (1)"&&node->GetComponent<Rigidbody>()->mass==7;Check(foundChild,"Subtree paste numbers child names");
     auto count=editor.scene->GetObjectCount();editor.Undo();Check(editor.scene->GetObjectCount()==count-2,"Paste undo atomic");editor.Redo();Check(editor.scene->GetObjectCount()==count,"Paste redo");
     editor.selected=sourceID;clipboard.CutObject(editor,registry);Check(!editor.scene->Find(sourceID),"Cut removes source");editor.Undo();Check(editor.scene->Find(sourceID)!=nullptr,"Cut undo");
     auto cutPaste=clipboard.PasteObject(editor,registry);Check(glm::length(Vector3(editor.scene->Find(cutPaste)->GetWorldMatrix()[3])-originalWorld)<.0001f,"Clipboard survives undo and stays in place");
+    Check(editor.scene->Find(cutPaste)->name=="source (2)","Repeated paste continues numbering after undo");
     auto& destination=editor.scene->CreateGameObject("destination");destination.AddComponent<MeshRenderer>();auto& existing=destination.AddComponent<Light>();existing.intensity=1;
     auto* source=editor.scene->Find(sourceID);clipboard.CopyComponent(*source,"Light",registry);auto before=SceneCodec(registry).Encode(*editor.scene);clipboard.PasteComponents(destination,registry);editor.Record(before);
     Check(destination.GetComponent<Light>()==&existing&&existing.intensity==99&&!existing.enabled,"Existing type overwritten without replacement");size_t attached=0;destination.EachComponent([&](Component&){++attached;});Check(attached==2,"No duplicate component");

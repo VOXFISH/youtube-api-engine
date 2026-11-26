@@ -9,7 +9,9 @@ Windows x64 / C++20 / OpenGL 3.3 기반의 작은 2D·3D 게임 제작용 엔진
 ## 바로 실행
 
 - **Rice.exe**에서 **File → New Project**를 누르고 이름을 입력하면 `Projects/<이름>/<이름>.rice`가 생성된다. 기존 프로젝트는 **File → Open Project**에서 `.rice` 파일을 선택한다.
-- 새 프로젝트의 Inspector에는 **System Layer**, **Layer 0**, **Layer 1**, **Layer 2**가 표시된다. **System Layer** 아래의 **Directional Light**를 선택해 조명을 편집할 수 있다. 기본 Ground는 Y=0에서 동적 물체를 받치며, Scene 뷰에는 XZ 격자와 X·Y·Z 좌표축이 표시된다.
+- 새 씬에는 순서대로 **System**(레이어 0), **UI**(레이어 1), **Game**(레이어 2)이 있다. System과 UI는 각각 고유한 색으로 표시되는 필수 레이어로, 이름과 순서가 고정되며 삭제할 수 없다. 게임 레이어는 추가할 수 있으며 모든 레이어는 계층의 최상위에 놓인다.
+- 기존 프로젝트를 열면 기존 오브젝트가 Game에 배치되고 모델 내부의 부모·자식 관계와 월드 위치는 유지된다. 새 프로젝트의 기본 **Directional Light**는 System에서 편집한다. 기본 Ground는 Y=0에서 동적 물체를 받치며, Scene 뷰에는 XZ 격자와 X·Y·Z 좌표축이 표시된다.
+- 일반 오브젝트의 생성 이름은 **New Object**다. 생성하거나 복사할 때 같은 이름이 있으면 **New Object (1)**, **New Object (2)**처럼 이름 뒤에 번호가 붙는다.
 - **RicePlayer.exe**는 로컬 게임용이다. 실행 후 `Builds`에서 게임 EXE를 고르거나 게임 EXE를 RicePlayer 위에 끌어 놓는다. 완성된 게임 EXE는 자체적으로 실행할 수도 있다.
 - **RiceCon.exe**는 빌드를 등록하고 YouTube 송출을 운영하는 별도 앱이다. 빌드 파일을 RiceCon 위에 끌어 놓거나 `RiceCon.exe --build <게임.exe>`로 등록한다.
 - 예제 프로젝트는 `Projects/Grass1000/Grass1000.rice`와 `Projects/Steve/Steve.rice`에서 연다. **Game → Play**로 실행한다.
@@ -451,6 +453,8 @@ Inspector에서 Add ReflectionProbe를 누르면 동적 반사를 활성화할 �
 
 
 Precise 모드의 반사상은 실제 반사 표면과 주변 물체의 월드 변환을 기준으로 계산합니다. 작은 오브젝트에서도 반사상의 모양을 유지합니다. 갱신을 멈춘 프로브는 마지막 큐브맵과 촬영 위치를 보관하며, 정밀 반사용 도형도 같은 촬영 시점의 것을 사용합니다.
+
+반사선이 물체나 지면에 닿지 않으면 그 방향의 스카이박스가 비칩니다. 재질의 Roughness를 높이면 하늘도 흐려집니다. 스카이박스의 이미지나 표시 여부를 바꾸면 작은 오브젝트의 반사도 함께 갱신됩니다.
 
 
 ## Camera와 Camera Follower

@@ -25,6 +25,7 @@ struct SceneInspectorTestAccess {
     }
     static void EndFrame(SceneInspector& inspector,Workspace& workspace){inspector.EndFrameEdits(workspace);}
     static void Settings(SceneInspector& inspector,Workspace& workspace){inspector.DrawSceneSettings(workspace);}
+    static ImU32 RequiredLayerColor(const GameObject& object){return ImGui::GetColorU32(SceneInspector::RequiredLayerColor(object));}
     static void QueueMaterial(SceneInspector& inspector,Workspace& workspace,GameObject& object){
         auto value=MaterialSettings(object.GetComponent<Material>());value.roughness=.9f;
         inspector.materialPrompt.Queue(*workspace.editor.scene,object,value);
@@ -262,11 +263,11 @@ void TestNewProjectLayers(const fs::path& root){
     ImGui::SetWindowFocus("Inspector###Inspector");test.Draw();
     auto* window=ImGui::FindWindowByName("Inspector###Inspector");
     Check(window&&window->Active,"New project opens its Inspector");
-    std::set<std::string> visibleLayers;
+    std::map<std::string,float> visibleLayers;
     for(const auto& object:test.workspace.editor.scene->GetObjects()){
         if(!object->GetComponent<SceneLayer>())continue;
         const auto scope=window->GetID(reinterpret_cast<void*>(static_cast<uintptr_t>(object->GetID())));
-        const auto row=ImHashStr(object->name.c_str(),0,scope);
+        const auto row=ImHashStr("###LayerRow",0,scope);
         bool found=false;
         for(float y=window->WorkRect.Min.y;y<window->WorkRect.Max.y;y+=3){
             ImVec2 point{window->WorkRect.Min.x+30,y};
@@ -274,12 +275,46 @@ void TestNewProjectLayers(const fs::path& root){
             if(ImGui::GetCurrentContext()->HoveredId!=row)continue;
             test.Click(point);
             Check(test.workspace.editor.selected==object->GetID(),"Clicking an Inspector layer selects its scene group");
-            visibleLayers.insert(object->name);found=true;break;
+            visibleLayers.emplace(object->name,y);found=true;break;
         }
         Check(found,"Every starter layer has a visible row in the Inspector");
     }
-    Check(visibleLayers==std::set<std::string>{"System Layer","Layer 0","Layer 1","Layer 2"},
-          "The new project Inspector shows the System Layer and layers 0 through 2");
+    Check(visibleLayers.size()==3&&visibleLayers.at("System")<visibleLayers.at("UI")&&
+          visibleLayers.at("UI")<visibleLayers.at("Game"),"The Inspector shows System, UI and Game in slot order");
+    auto& editor=test.workspace.editor;
+    const auto layers=SceneLayers::Ordered(*editor.scene);
+    const auto systemColor=SceneInspectorTestAccess::RequiredLayerColor(*layers[0]);
+    const auto uiColor=SceneInspectorTestAccess::RequiredLayerColor(*layers[1]);
+    const auto textColor=ImGui::GetColorU32(ImGuiCol_Text);
+    auto renderedColor=[&](ImU32 color){
+        return std::any_of(window->DrawList->VtxBuffer.begin(),window->DrawList->VtxBuffer.end(),
+                           [&](const ImDrawVert& vertex){return vertex.col==color;});
+    };
+    Check(systemColor!=uiColor&&systemColor!=textColor&&uiColor!=textColor&&renderedColor(systemColor)&&renderedColor(uiColor),
+          "The Inspector renders each required layer with its own color");
+    auto control=[&](const char* label){
+        const auto id=window->GetID(label);
+        for(float y=window->WorkRect.Min.y;y<window->WorkRect.Max.y;y+=3){
+            ImVec2 point{window->WorkRect.Min.x+30,y};test.Draw(point);
+            if(ImGui::GetCurrentContext()->HoveredId==id)return point;
+        }
+        throw std::runtime_error(std::string("Missing Inspector control: ")+label);
+    };
+    editor.Select(layers[2]->GetID());test.Draw();
+    const auto name=control("Name");
+    for(auto* required:{layers[0],layers[1]}){
+        editor.Select(required->GetID());test.Draw();
+        test.Click(name);ImGui::GetIO().AddInputCharactersUTF8("x");test.Draw(name);
+        Check(required->name==(required==layers[0]?"System":"UI")&&ImGui::GetCurrentContext()->ActiveId!=window->GetID("Name"),
+              "The required layer names are read-only");
+    }
+    test.Click(control("Add game layer"));
+    auto* extra=editor.scene->Find(editor.selected);
+    Check(extra&&extra->GetComponent<SceneLayer>()&&extra->name=="Game (1)"&&!extra->GetHierarchyParent(),
+          "Adding a Game layer in the Inspector creates and selects a distinct root layer");
+    auto id=extra->GetID();
+    editor.Undo();Check(!editor.scene->Find(id),"Undo removes the added layer");
+    editor.Redo();Check(editor.scene->Find(id),"Redo restores the added layer");
 }
 
 void TestComponentControls(const fs::path& root){

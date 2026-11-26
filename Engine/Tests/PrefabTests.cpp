@@ -157,6 +157,39 @@ void CollisionReuse() {
     Check(CollisionSystem::Update(scene)==0,"Released colliders do not participate in physics");pool.Clear(&scene);
 }
 
+void LayerRolesAndInstanceNames() {
+    ComponentRegistry registry;
+    Scene source;
+    auto& layer=source.CreateGameObject("Pieces");
+    layer.isGroup=true;
+    auto& marker=layer.AddComponent<SceneLayer>();marker.role=SceneLayer::Game;
+    auto& piece=source.CreateGameObject("Rook");piece.SetGroup(&layer);
+    auto asset=PrefabAsset::Capture(source,layer.GetID(),registry);
+    Scene edit;
+    auto first=asset->Create(edit,registry,{},false);
+    auto second=asset->Create(edit,registry,{},false);
+    Check(edit.Find(first[0])->name=="Pieces"&&edit.Find(second[0])->name=="Pieces (1)"&&
+          edit.Find(first[1])->name=="Rook"&&edit.Find(second[1])->name=="Rook (1)",
+          "Repeated prefab placement numbers roots and descendants independently");
+    Check(edit.Find(second[0])->GetComponent<SceneLayer>()->role==SceneLayer::Game,"Game layer prefabs retain their role");
+
+    const std::string field="\"Scene Layer\" \"1\n2\n\"";
+    for(const auto& payload:{"1\n","1\n0\n","1\n1\n"}){
+        auto text=asset->Encode();auto at=text.find(field);
+        Check(at!=text.npos,"Prefab encodes the game role");
+        text.replace(at,field.size(),std::string("\"Scene Layer\" \"")+payload+"\"");
+        auto imported=PrefabAsset::Decode(text,registry);
+        Scene runtime;auto nodes=imported->Create(runtime,registry,{},true);
+        auto* group=runtime.Find(nodes.front());
+        Check(group->isGroup&&!group->GetComponent<SceneLayer>()&&runtime.Find(nodes.back())->GetGroup()==group,
+              "Old prefab content stays grouped and cannot instantiate a required layer");
+    }
+    for(auto role:{SceneLayer::System,SceneLayer::UI}){
+        marker.role=role;
+        Reject([&]{PrefabAsset::Capture(source,layer.GetID(),registry);},"Cannot capture a required layer as a prefab");
+    }
+}
+
 void ReentrantCallbacks() {
     ComponentRegistry registry;
     registry.Register<Probe>("Probe",[](Probe& probe,const PropertyVisitor& fields){fields("Value",&probe.value);});
@@ -189,7 +222,7 @@ void SceneDestruction() {
 int main(int argc,char** argv) {
     try{
         Check(argc==2,"Expected test output directory");
-        HierarchyAndReuse(fs::path(argv[1])/NewAssetID());CollisionReuse();ReentrantCallbacks();SceneDestruction();
+        HierarchyAndReuse(fs::path(argv[1])/NewAssetID());CollisionReuse();LayerRolesAndInstanceNames();ReentrantCallbacks();SceneDestruction();
         std::cout<<"Prefab persistence, hierarchy, pooling, lifecycle and stale-handle tests passed\n";return 0;
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }

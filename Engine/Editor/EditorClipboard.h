@@ -1,6 +1,7 @@
 #pragma once
 #include "Rice/Benchmark.h"
 #include "Project/SceneCodec.h"
+#include "Project/SceneLayers.h"
 #include <optional>
 namespace Rice {
 // Clipboard stores property values, never pointers to live components or resources.
@@ -17,15 +18,15 @@ public:
     bool HasComponents()const{ RICE_BENCHMARK_FUNCTION(); return componentTransform.has_value()||!components.empty();}
     void CopyObject(Scene& scene,EntityID id,ComponentRegistry& registry){
         RICE_BENCHMARK_FUNCTION();
-        auto* root=scene.Find(id);if(!root)return;
+        auto* root=scene.Find(id);if(!root||root->IsRequiredLayer())return;
         std::vector<Node> captured;
         auto capture=[&](GameObject& obj){ RICE_BENCHMARK_FUNCTION(); captured.push_back({obj.GetID(),obj.GetParent()?obj.GetParent()->GetID():0,obj.name,obj.transform,obj.activeSelf,ComponentSnapshot::CaptureAll(obj,registry),obj.isGroup,obj.GetGroup()?obj.GetGroup()->GetID():0,obj.previousGroup,obj.groupOffset,obj.groupParentBind,obj.groupCommonBind,obj.GetWorldMatrix()});};
         capture(*root);
         for(auto& obj:scene.GetObjects())if(obj.get()!=root&&!obj->IsPendingDestroy())for(auto* p=obj->GetHierarchyParent();p;p=p->GetHierarchyParent())if(p==root){capture(*obj);break;}
         objects=std::move(captured);sourceScene=scene.GetInstanceID();rootWorldPosition=Vector3(root->GetWorldMatrix()[3]);
     }
-    void DeleteObject(EditorSession& editor){ RICE_BENCHMARK_FUNCTION(); if(editor.playing||!editor.scene->Find(editor.selected))return;auto id=editor.selected;editor.Edit([&](Scene& scene){ RICE_BENCHMARK_FUNCTION(); scene.Destroy(id);});editor.selected=0;}
-    void CutObject(EditorSession& editor,ComponentRegistry& registry){ RICE_BENCHMARK_FUNCTION(); if(editor.playing||!editor.scene->Find(editor.selected))return;CopyObject(*editor.scene,editor.selected,registry);DeleteObject(editor);}
+    void DeleteObject(EditorSession& editor){ RICE_BENCHMARK_FUNCTION(); auto* selected=editor.scene->Find(editor.selected);if(editor.playing||!selected||selected->IsRequiredLayer())return;auto id=editor.selected;editor.Edit([&](Scene& scene){ RICE_BENCHMARK_FUNCTION(); scene.Destroy(id);});editor.selected=0;}
+    void CutObject(EditorSession& editor,ComponentRegistry& registry){ RICE_BENCHMARK_FUNCTION(); auto* selected=editor.scene->Find(editor.selected);if(editor.playing||!selected||selected->IsRequiredLayer())return;CopyObject(*editor.scene,editor.selected,registry);DeleteObject(editor);}
     EntityID PasteObject(EditorSession& editor,ComponentRegistry& registry){
         RICE_BENCHMARK_FUNCTION();
         if(editor.playing||objects.empty())return 0;EntityID pasted=0;
@@ -47,6 +48,7 @@ public:
                 };
                 for(auto& node:objects)place(node);
                 pasted=ids.at(objects.front().source);auto* root=scene.Find(pasted);root->TranslateWorld(rootWorldPosition-Vector3(root->GetWorldMatrix()[3]));
+                SceneLayers::PlaceRoot(*root,scene.Find(editor.selected));
             }catch(...){for(auto id:created)scene.Destroy(id);scene.Flush();throw;}
         });editor.Select(pasted);return pasted;
     }

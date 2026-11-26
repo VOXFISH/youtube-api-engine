@@ -6,7 +6,7 @@
 
 | API | 입력 / 반환 / 계약 |
 |---|---|
-| Scene::CreateGameObject(name, id=0) → GameObject& | 씬 소유 객체 생성. id=0은 자동 발급, 명시 ID 중복은 예외. 반환 참조는 삭제·씬 교체 전까지 유효. |
+| Scene::CreateGameObject(name="New Object", id=0) → GameObject& | 새 객체에 ID를 발급한다. 씬에 같은 이름이 있으면 사용 가능한 가장 작은 양의 정수를 괄호에 넣어 붙인다. 파일·히스토리 복원의 명시적 ID는 저장된 이름을 유지하며, ID 중복은 예외다. 반환 참조는 삭제·씬 교체 전까지 유효하다. |
 | Scene::Find(EntityID) → GameObject* | 없거나 삭제 예약이면 nullptr. Undo·Load·Play·Stop 이후에는 ID로 재조회한다. |
 | Scene::Destroy(id) | 대상과 모든 자손을 삭제 예약. 이 호출 중 메모리는 해제하지 않는다. |
 | Scene::Flush() | 삭제 예약 컴포넌트·객체 해제. 콜백 순회가 끝난 프레임 경계에서 호출한다. |

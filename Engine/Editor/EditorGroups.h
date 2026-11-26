@@ -1,6 +1,7 @@
 #pragma once
 #include "Rice/Benchmark.h"
 #include "Project/SceneCodec.h"
+#include "Project/SceneLayers.h"
 #include "GizmoMath.h"
 namespace Rice {
 class EditorGroups {
@@ -10,6 +11,7 @@ public:
         if(editor.playing)return 0;
         std::vector<GameObject*> roots;
         for(auto id:selected)if(auto* obj=editor.scene->Find(id)){
+            if(obj->GetComponent<SceneLayer>())return 0;
             bool covered=false;for(auto candidate:selected)if(candidate!=id)if(auto* ancestor=editor.scene->Find(candidate);ancestor&&obj->DependsOn(ancestor)){covered=true;break;}
             if(!covered)roots.push_back(obj);
         }
@@ -22,8 +24,8 @@ public:
             if(std::abs(glm::determinant(obj->GetWorldMatrix()))<1e-8f)throw std::runtime_error("Cannot group singular transform");
             low=glm::min(low,a);high=glm::max(high,b);}
         EntityID result=0;
-        editor.Edit([&](Scene& scene){ RICE_BENCHMARK_FUNCTION(); auto& group=scene.CreateGameObject("Group");result=group.GetID();group.isGroup=true;
-            group.SetParent(parent);group.SetWorldMatrix(glm::translate(Matrix4(1),(low+high)*.5f));
+        editor.Edit([&](Scene& scene){ RICE_BENCHMARK_FUNCTION(); auto& group=scene.CreateGameObject();result=group.GetID();group.isGroup=true;
+            group.SetParent(parent);SceneLayers::PlaceRoot(group,roots.front());group.SetWorldMatrix(glm::translate(Matrix4(1),(low+high)*.5f));
             for(auto* obj:roots){auto previous=obj->GetGroup();obj->SetGroup(&group);obj->previousGroup=previous?previous->GetID():0;}
         });editor.Select(result);return result;
     }
@@ -34,7 +36,7 @@ public:
     }
     static void Ungroup(EditorSession& editor,EntityID id){
         RICE_BENCHMARK_FUNCTION();
-        auto* group=editor.scene->Find(id);if(editor.playing||!group||!group->isGroup)return;
+        auto* group=editor.scene->Find(id);if(editor.playing||!group||!group->isGroup||group->GetComponent<SceneLayer>())return;
         std::vector<EntityID> released;
         editor.Edit([&](Scene& scene){
             RICE_BENCHMARK_FUNCTION();
@@ -44,6 +46,7 @@ public:
             for(auto& [obj,world]:members){
                 if(obj->GetGroup()==group){auto* previous=scene.Find(obj->previousGroup);obj->SetGroup(previous==group?nullptr:previous,false);obj->previousGroup=0;}
                 if(obj->GetParent()==group)obj->SetParent(group->GetHierarchyParent());
+                SceneLayers::PlaceRoot(*obj,group->GetHierarchyParent());
                 obj->SetWorldMatrix(world);released.push_back(obj->GetID());
             }
             scene.Destroy(id);
@@ -53,12 +56,19 @@ public:
         RICE_BENCHMARK_FUNCTION();
         if(editor.playing||source==reference)return;
         auto* obj=editor.scene->Find(source);auto* sibling=editor.scene->Find(reference);if(!obj||!sibling)return;
+        if(!CanPlaceBeside(*obj,*sibling))return;
         auto* parent=sibling->GetHierarchyParent();
         if(parent&&parent->DependsOn(obj))throw std::invalid_argument("Hierarchy cycle");
         editor.Edit([&](Scene& scene){ RICE_BENCHMARK_FUNCTION(); if(obj->GetHierarchyParent()!=parent)Reparent(*obj,parent);scene.PlaceSibling(source,reference,after);});
     }
+    static bool CanPlaceBeside(const GameObject& object,const GameObject& sibling){
+        const bool layer=object.GetComponent<SceneLayer>()!=nullptr;
+        return layer==(sibling.GetComponent<SceneLayer>()!=nullptr)&&
+               (!layer||(!object.IsRequiredLayer()&&!sibling.IsRequiredLayer()));
+    }
     static void Reparent(GameObject& obj,GameObject* parent){
         RICE_BENCHMARK_FUNCTION();
+        if(parent&&obj.GetComponent<SceneLayer>())throw std::invalid_argument("Layers must be at the scene root");
         if(parent&&parent->DependsOn(&obj))throw std::invalid_argument("Hierarchy cycle");
         if(parent&&std::abs(glm::determinant(parent->GetWorldMatrix()))<1e-8f)throw std::runtime_error("Singular parent transform");
         std::vector<std::pair<GameObject*,Matrix4>> members;

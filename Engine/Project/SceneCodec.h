@@ -36,7 +36,7 @@ public:
     }
     ComponentRegistry(){
         RICE_BENCHMARK_FUNCTION();
-        Register<SceneLayer>("Scene Layer",[](auto&,auto&){},false);
+        Register<SceneLayer>("Scene Layer",[](auto& layer,auto& field){field("Role",&layer.role);},false);
         Register<MeshRenderer>("MeshRenderer",[](auto& c,auto& f){ RICE_BENCHMARK_FUNCTION(); f("Color",&c.color);f("Shape",&c.shape);f("Custom mesh",&c.custom);f("Shape asset",&c.shapeAsset);f("Triangle materials",&c.triangleMaterials);f("Cast shadows",&c.castsShadow);f("Reflection mode",&c.reflectionMode);});
         Register<CameraComponent>("Camera",[](auto& c,auto& f){f("Primary",&c.primary);f("Field of view",&c.fieldOfView);f("Near clip",&c.nearClip);f("Far clip",&c.farClip);});
         Register<CameraFollower>("Camera Follower",[](auto& c,auto& f){f("Camera",&c.camera);f("Translation",&c.transform.position);f("Rotation",&c.transform.rotation);f("Scale",&c.transform.localScale);f("Show in Shape Editor",&c.showInEditor);});
@@ -105,43 +105,50 @@ struct ComponentSnapshot {
         if(values.size()!=count)throw std::runtime_error("Register all component fields before copying");
         return values;
     }
+    void ReadInto(const ComponentType& registration,Component& component) const {
+        std::istringstream input(data);
+        registration.fields(component,[&](const char* key,Property property){
+            if(registration.name=="Scene Layer"&&std::string_view(key)=="Role"){
+                input>>std::ws;
+                if(input.eof()){*std::get<int*>(property)=SceneLayer::Legacy;return;}
+            }
+            if(registration.name=="MeshRenderer"&&std::string_view(key)=="Reflection mode"){
+                if(!input.eof())input>>std::ws;
+                if(input.eof()){*std::get<int*>(property)=int(ReflectionMode::Precise);return;}
+            }
+            if(std::string_view(key)=="Cast shadows"){
+                if(!input.eof())input>>std::ws;
+                if(input.eof()){*std::get<bool*>(property)=true;return;}
+            }
+            if(dynamic_cast<ScriptComponentBase*>(&component)&&std::holds_alternative<std::string*>(property)){
+                input>>std::ws;
+                if(input.eof()){
+                    if(std::string_view(key)!="Data object key")std::get<std::string*>(property)->clear();
+                    return;
+                }
+            }
+            if(registration.name=="MeshRenderer"&&std::string_view(key)=="Shape asset"){
+                if(input.eof()){std::get<std::string*>(property)->clear();return;}input>>std::ws;if(input.eof()){std::get<std::string*>(property)->clear();return;}
+            }
+            if(std::holds_alternative<TriangleMaterials*>(property)){
+                if(!input.eof())input>>std::ws;
+                if(input.eof()){std::get<TriangleMaterials*>(property)->faces.clear();return;}
+            }
+            // Older prefab/clipboard payloads end after Shape.
+            if(std::holds_alternative<ShapeMesh*>(property)){
+                input>>std::ws;if(input.eof()){auto* mesh=std::get<ShapeMesh*>(property);auto revision=mesh->revision;*mesh=ShapeMesh{};mesh->revision=revision+1;return;}
+            }
+            ReadProperty(input,property);
+        });
+        input>>std::ws;
+        if(!input.eof())throw std::runtime_error("Unexpected component properties: "+registration.name);
+    }
     static void Apply(GameObject& object,const std::vector<ComponentSnapshot>& values,ComponentRegistry& registry) {
         RICE_BENCHMARK_FUNCTION();
         for(const auto& value:values){
             auto* type=registry.Find(value.type);
             if(!type)throw std::runtime_error("Component is not registered: "+value.type);
-            auto& component=type->add(object);std::istringstream input(value.data);
-            type->fields(component,[&](const char* key,Property property){
-                if(type->name=="MeshRenderer"&&std::string_view(key)=="Reflection mode"){
-                    if(!input.eof())input>>std::ws;
-                    if(input.eof()){*std::get<int*>(property)=int(ReflectionMode::Precise);return;}
-                }
-                if(std::string_view(key)=="Cast shadows"){
-                    if(!input.eof())input>>std::ws;
-                    if(input.eof()){*std::get<bool*>(property)=true;return;}
-                }
-                if(dynamic_cast<ScriptComponentBase*>(&component)&&std::holds_alternative<std::string*>(property)){
-                    input>>std::ws;
-                    if(input.eof()){
-                        if(std::string_view(key)!="Data object key")std::get<std::string*>(property)->clear();
-                        return;
-                    }
-                }
-                if(type->name=="MeshRenderer"&&std::string_view(key)=="Shape asset"){
-                    if(input.eof()){std::get<std::string*>(property)->clear();return;}input>>std::ws;if(input.eof()){std::get<std::string*>(property)->clear();return;}
-                }
-                if(std::holds_alternative<TriangleMaterials*>(property)){
-                    if(!input.eof())input>>std::ws;
-                    if(input.eof()){std::get<TriangleMaterials*>(property)->faces.clear();return;}
-                }
-                // Older prefab/clipboard payloads end after Shape.
-                if(std::holds_alternative<ShapeMesh*>(property)){
-                    input>>std::ws;if(input.eof()){auto* mesh=std::get<ShapeMesh*>(property);auto revision=mesh->revision;*mesh=ShapeMesh{};mesh->revision=revision+1;return;}
-                }
-                ReadProperty(input,property);
-            });
-            input>>std::ws;
-            if(!input.eof())throw std::runtime_error("Unexpected component properties: "+value.type);
+            value.ReadInto(*type,type->add(object));
             if(auto* mesh=object.GetComponent<MeshRenderer>())mesh->ValidateSettings();
         }
     }
@@ -165,7 +172,21 @@ class SceneCodec {
     static void Expect(std::istream& in,const std::string& expected){ RICE_BENCHMARK_FUNCTION(); std::string token;in>>std::quoted(token);if(!in||token!=expected)throw std::runtime_error("Expected "+expected);}
 public:
     explicit SceneCodec(ComponentRegistry& r):registry(r){ RICE_BENCHMARK_FUNCTION(); }
-    std::string Encode(Scene& scene,bool editorSettings=true){ RICE_BENCHMARK_FUNCTION(); std::ostringstream out;out<<std::setprecision(9)<<"RICE_SCENE 5\n";
+    static constexpr size_t MaxObjects=10000, DefaultLayerCount=3;
+    // Four layer slots were reserved by older files. Accept their records before migration.
+    static constexpr size_t LayerRecordAllowance=4;
+    static bool FitsObjectLimit(Scene& scene,size_t additional=0){
+        if(scene.GetObjectCount()+additional<=MaxObjects)return true;
+        size_t objects=additional,layers=0;
+        for(const auto& object:scene.GetObjects())if(!object->IsPendingDestroy()&&!object->IsPoolAvailable()){
+            ++objects;
+            if(object->GetComponent<SceneLayer>())++layers;
+        }
+        return objects<=MaxObjects+std::min(layers,LayerRecordAllowance);
+    }
+    std::string Encode(Scene& scene,bool editorSettings=true){ RICE_BENCHMARK_FUNCTION();
+        if(!FitsObjectLimit(scene))throw std::runtime_error("Scene exceeds 10,000 objects");
+        std::ostringstream out;out<<std::setprecision(9)<<"RICE_SCENE 5\n";
         auto& settings=scene.settings;out<<"Settings "<<settings.skybox<<' '<<std::quoted(settings.skyboxAsset)<<' '<<settings.directionalLight<<' ';
         WriteProperty(out,&settings.lightColor);out<<' '<<settings.lightIntensity<<' ';WriteProperty(out,&settings.lightDirection);
         out<<' '<<settings.ground<<' '<<settings.groundCollision<<'\n';
@@ -186,7 +207,7 @@ public:
         }
         bool gridRead=false;
         std::string token;while(in>>token){if(token=="EndScene")break;
-            if(token=="EditorGrid"&&version>=5&&!gridRead&&result->GetObjectCount()==0){ReadProperty(in,&result->settings.axes);ReadProperty(in,&result->settings.grids);gridRead=true;continue;}if(token!="Object")throw std::runtime_error("Expected Object");EntityID id=0,parent=0;std::string name;bool active=true;in>>id>>parent>>std::quoted(name)>>active;if(!in||id==0||id==UINT64_MAX||result->GetObjectCount()>=10000)throw std::runtime_error("Invalid entity");auto& obj=result->CreateGameObject(name,id);obj.activeSelf=active;ReadProperty(in,&obj.transform.position);ReadProperty(in,&obj.transform.rotation);ReadProperty(in,&obj.transform.localScale);if(version>=2){EntityID group=0;in>>obj.isGroup>>group>>obj.previousGroup;ReadMatrix(in,obj.transform.affine);ReadMatrix(in,obj.groupOffset);ReadMatrix(in,obj.groupParentBind);ReadMatrix(in,obj.groupCommonBind);groups.push_back({id,group});}parents.push_back({id,parent});std::set<std::string> found;
+            if(token=="EditorGrid"&&version>=5&&!gridRead&&result->GetObjectCount()==0){ReadProperty(in,&result->settings.axes);ReadProperty(in,&result->settings.grids);gridRead=true;continue;}if(token!="Object")throw std::runtime_error("Expected Object");EntityID id=0,parent=0;std::string name;bool active=true;in>>id>>parent>>std::quoted(name)>>active;if(!in||id==0||id==UINT64_MAX||result->GetObjectCount()>=MaxObjects+LayerRecordAllowance)throw std::runtime_error("Invalid entity");auto& obj=result->CreateGameObject(name,id);obj.activeSelf=active;ReadProperty(in,&obj.transform.position);ReadProperty(in,&obj.transform.rotation);ReadProperty(in,&obj.transform.localScale);if(version>=2){EntityID group=0;in>>obj.isGroup>>group>>obj.previousGroup;ReadMatrix(in,obj.transform.affine);ReadMatrix(in,obj.groupOffset);ReadMatrix(in,obj.groupParentBind);ReadMatrix(in,obj.groupCommonBind);groups.push_back({id,group});}parents.push_back({id,parent});std::set<std::string> found;
             if(version>=4)ReadProperty(in,&obj.transform.pivot);
             while(in>>token){
                 if(token=="EndObject")break;
@@ -209,7 +230,8 @@ public:
                     if(!in)throw std::runtime_error("Truncated script component");
                     in.seekg(position);if(next!=key)return;
                 }
-                if(std::string_view(key)=="Cast shadows"||(typeName=="MeshRenderer"&&std::string_view(key)=="Reflection mode")){
+                if(std::string_view(key)=="Cast shadows"||(typeName=="MeshRenderer"&&std::string_view(key)=="Reflection mode")||
+                   (typeName=="Scene Layer"&&std::string_view(key)=="Role")){
                     auto position=in.tellg();std::string next;in>>std::quoted(next);
                     if(!in)throw std::runtime_error("Truncated render setting");
                     in.seekg(position);
@@ -221,16 +243,29 @@ public:
             if(version<4){auto pivot=obj.GetLocalPivot();obj.transform.position+=Vector3(obj.transform.GetMatrix()*Vector4(pivot,0))-pivot;}
             if(auto* mesh=obj.GetComponent<MeshRenderer>())mesh->ValidateSettings();
         }if(token!="EndScene")throw std::runtime_error("Truncated scene");in>>std::ws;if(!in.eof())throw std::runtime_error("Trailing scene data");
+        if(!FitsObjectLimit(*result))throw std::runtime_error("Scene exceeds 10,000 objects");
+        // Old editors could nest layer groups. Keep those transform nodes and
+        // their authored links as ordinary objects before attaching children.
+        auto demoteNestedLegacyLayer=[&](EntityID id,EntityID ancestor){
+            if(!ancestor)return;
+            auto* object=result->Find(id);
+            if(auto* layer=object->GetComponent<SceneLayer>();layer&&layer->role==SceneLayer::Legacy){
+                object->RemoveComponent(*layer);
+                object->FlushComponents();
+            }
+        };
+        for(auto [id,parent]:parents)demoteNestedLegacyLayer(id,parent);
+        for(auto [id,group]:groups)demoteNestedLegacyLayer(id,group);
         for(auto [id,parent]:parents)if(parent){auto* target=result->Find(parent);if(!target)throw std::runtime_error("Missing parent");result->Find(id)->SetParent(target);}
         for(auto [id,group]:groups)if(group){auto* target=result->Find(group);if(!target)throw std::runtime_error("Missing group");auto* obj=result->Find(id);auto offset=obj->groupOffset,bind=obj->groupParentBind,common=obj->groupCommonBind;obj->SetGroup(target,false);obj->groupOffset=offset;obj->groupParentBind=bind;obj->groupCommonBind=common;}return result;
     }
     void Save(Scene& scene,const fs::path& path){ RICE_BENCHMARK_FUNCTION(); AtomicWrite(path,Encode(scene));}
     Scope<Scene> Load(const fs::path& path){ RICE_BENCHMARK_FUNCTION(); return Decode(ReadFile(path));}
-    GameObject& Duplicate(Scene& scene,EntityID id){ RICE_BENCHMARK_FUNCTION(); auto* original=scene.Find(id);if(!original)throw std::runtime_error("Missing entity");if(original->isGroup){
+    GameObject& Duplicate(Scene& scene,EntityID id){ RICE_BENCHMARK_FUNCTION(); auto* original=scene.Find(id);if(!original)throw std::runtime_error("Missing entity");if(original->IsRequiredLayer())throw std::invalid_argument("Cannot duplicate a required layer");if(original->isGroup){
             std::vector<GameObject*> sources{original};
             for(auto& obj:scene.GetObjects())if(obj.get()!=original&&!obj->IsPendingDestroy())for(auto* p=obj->GetHierarchyParent();p;p=p->GetHierarchyParent())if(p==original){sources.push_back(obj.get());break;}
             std::map<EntityID,GameObject*> copies;
-            for(auto* source:sources){auto& copy=scene.CreateGameObject(source->name+(source==original?" Copy":""));copies[source->GetID()]=&copy;copy.transform=source->transform;copy.activeSelf=source->activeSelf;copy.isGroup=source->isGroup;
+            for(auto* source:sources){auto& copy=scene.CreateGameObject(source->name);copies[source->GetID()]=&copy;copy.transform=source->transform;copy.activeSelf=source->activeSelf;copy.isGroup=source->isGroup;
                 for(auto& t:registry.types)if(auto* c=t.get(*source)){std::ostringstream out;out<<std::setprecision(9);t.fields(*c,[&](const char*,Property p){ RICE_BENCHMARK_FUNCTION(); WriteProperty(out,p);out<<'\n';});std::istringstream in(out.str());auto& target=t.add(copy);t.fields(target,[&](const char*,Property p){ RICE_BENCHMARK_FUNCTION(); ReadProperty(in,p);});}}
             auto mapped=[&](GameObject* obj){ RICE_BENCHMARK_FUNCTION(); return obj&&copies.contains(obj->GetID())?copies.at(obj->GetID()):obj;};
             for(auto& [source,copy]:copies)RemapScriptBindings(*copy,[&](EntityID id){return copies.contains(id)?copies.at(id)->GetID():EntityID{};});
@@ -240,7 +275,12 @@ public:
             for(auto* source:sources){auto* copy=copies.at(source->GetID());if(source->GetGroup()){copy->SetGroup(mapped(source->GetGroup()),false);copy->groupOffset=source->groupOffset;copy->groupParentBind=source->groupParentBind;copy->groupCommonBind=source->groupCommonBind;}copy->previousGroup=copies.contains(source->previousGroup)?copies.at(source->previousGroup)->GetID():source->previousGroup;}
             return *copies.at(id);
         }
-        auto& copy=scene.CreateGameObject(original->name+" Copy");copy.transform=original->transform;copy.activeSelf=original->activeSelf;copy.SetParent(original->GetParent());
+        auto& copy=scene.CreateGameObject(original->name);copy.transform=original->transform;copy.activeSelf=original->activeSelf;copy.SetParent(original->GetParent());
+        if(auto* group=original->GetGroup()){
+            copy.SetGroup(group,false);
+            copy.groupOffset=original->groupOffset;copy.groupParentBind=original->groupParentBind;copy.groupCommonBind=original->groupCommonBind;
+        }
+        copy.previousGroup=original->previousGroup;
         for(auto& t:registry.types)if(auto* source=t.get(*original)){std::ostringstream out;t.fields(*source,[&](const char*,Property p){ RICE_BENCHMARK_FUNCTION(); WriteProperty(out,p);out<<'\n';});std::istringstream in(out.str());auto& target=t.add(copy);t.fields(target,[&](const char*,Property p){ RICE_BENCHMARK_FUNCTION(); ReadProperty(in,p);});}
         if(auto* anchor=copy.GetComponent<Anchor>())anchor->child=0;
         return copy;}
@@ -551,8 +591,10 @@ public:
     void DeleteSelection(){
         RICE_BENCHMARK_FUNCTION();
         if(playing)return;SyncSelection();auto ids=selection;
+        std::erase_if(ids,[&](EntityID id){return scene->Find(id)->IsRequiredLayer();});
+        if(ids.empty())return;
         Edit([&](Scene& s){ RICE_BENCHMARK_FUNCTION(); for(auto id:ids)s.Destroy(id);});
-        selection.clear();selected=0;
+        SyncSelection();
     }
 
     void Record(const std::string& before){

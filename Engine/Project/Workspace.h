@@ -135,7 +135,10 @@ public:
         auto relative=Project::NamedScene(name);
         if(project->HasScene(relative))throw std::runtime_error("A scene with that name already exists");
         auto next=duplicate?SceneCodec(registry).Decode(SceneCodec(registry).Encode(*editor.scene)):CreateScope<Scene>();
-        if(!duplicate)project->SetDefaultSkybox(*next);
+        if(!duplicate){
+            project->SetDefaultSkybox(*next);
+            SceneLayers::CreateDefaults(*next);
+        }
         auto saved=SceneCodec(registry).Encode(*next);
         project->SaveScene(*editor.scene,registry,relative,next.get());
         ResetRuntime();
@@ -192,7 +195,9 @@ public:
         RICE_BENCHMARK_FUNCTION();
         BindScene();
         if(editor.playing)return prefabPool.Instantiate(*editor.scene,prefabs.Load(name),position);
-        return prefabs.Instantiate(*editor.scene,name,position);
+        auto& root=prefabs.Instantiate(*editor.scene,name,position);
+        SceneLayers::PlaceRoot(root,editor.scene->Find(editor.selected));
+        return root;
     }
     void PrewarmPrefab(const std::string& name,size_t count){
         RICE_BENCHMARK_FUNCTION();

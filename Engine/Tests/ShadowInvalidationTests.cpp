@@ -181,6 +181,30 @@ void ParentsAndCaptureVolume(){
     corner.transform.position.z=10;compare.Step(scene,camera,"fully outside capture cube is cached",0,12);
 }
 
+void CheckRestoredPointDepth(Compare& compare,Scene& scene,const Camera& camera){
+    // Only the first point light sees the single cube, on its negative Y face.
+    // Equal images across caches could still contain the same phantom shadow.
+    for(auto* renderer:{&compare.selective,&compare.global,&compare.forced}){
+        Capture(*renderer,compare.target,scene,camera);
+        GLint active=0,width=0,layers=0;
+        glGetIntegerv(GL_ACTIVE_TEXTURE,&active);
+        glActiveTexture(GL_TEXTURE3);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY,0,GL_TEXTURE_WIDTH,&width);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY,0,GL_TEXTURE_DEPTH,&layers);
+        Check(width>0&&layers==24,"Two point lights expose twelve nearest and twelve alternate depth faces");
+        const size_t faceSize=size_t(width)*width;
+        std::vector<float> depths(faceSize*layers);
+        glGetTexImage(GL_TEXTURE_2D_ARRAY,0,GL_DEPTH_COMPONENT,GL_FLOAT,depths.data());
+        glActiveTexture(active);
+        Check(glGetError()==GL_NO_ERROR,"Read restored point shadow depth");
+        for(int face=0;face<layers;++face){
+            const auto start=depths.begin()+face*faceSize;
+            const bool empty=std::all_of(start,start+faceSize,[](float depth){return depth==1.f;});
+            Check(empty==(face!=3),"Empty point shadow faces retain far depth after restoring a light");
+        }
+    }
+}
+
 void LightsDirectionalAndSceneSwitch(){
     Scene scene;scene.settings.ground=true;auto& first=Point(scene,{0,4,0});Point(scene,{24,4,0});
     auto& caster=Cube(scene,{0,1.5f,0});auto camera=GroundCamera();Compare compare;
@@ -190,13 +214,14 @@ void LightsDirectionalAndSceneSwitch(){
     light.intensity=3;light.color={.9f,.8f,1,1};compare.Step(scene,camera,"radiance edits preserve depth",0,0);
     light.castsShadow=false;compare.Step(scene,camera,"shadow layer removal",6,6);
     light.castsShadow=true;compare.Step(scene,camera,"shadow layer restoration",12,12);
+    CheckRestoredPointDepth(compare,scene,camera);
     light.enabled=false;compare.Step(scene,camera,"light slot removal",6,6);
     light.enabled=true;compare.Step(scene,camera,"light slot restoration",12,12);
     light.type=1;light.direction={1,-2,0};compare.Step(scene,camera,"point changes to directional",7,7);
     caster.transform.position.x=1;compare.Step(scene,camera,"directional refreshes globally while remote point is cached",1,7);
     auto& noncaster=Cube(scene,{100,2,0});noncaster.GetComponent<MeshRenderer>()->castsShadow=false;
-    compare.Step(scene,camera,"noncaster expands directional fitting bounds",1);
-    noncaster.transform.position.x=110;compare.Step(scene,camera,"noncaster fitting motion updates directional matrix",1,1);
+    compare.Step(scene,camera,"remote noncaster preserves directional depth",0,0);
+    noncaster.transform.position.x=110;compare.Step(scene,camera,"moving a receiver preserves directional depth",0,0);
     for(auto* renderer:{&compare.selective,&compare.global,&compare.forced})renderer->SetShadowResolution(128);
     compare.Step(scene,camera,"resolution change redraws every layer",7,7);
     compare.Step(scene,camera,"resized maps settle",0,0);
@@ -204,6 +229,49 @@ void LightsDirectionalAndSceneSwitch(){
     Scene replacement;replacement.settings.ground=true;Point(replacement,{0,4,0});Point(replacement,{24,4,0});Cube(replacement,{0,1.5f,0});
     compare.Step(replacement,camera,"scene replacement resets dependency histories",12,12);
     compare.Step(replacement,camera,"replacement scene settles",0,0);
+}
+
+void DirectionalMovingCasters(){
+    Scene scene;scene.settings.ground=true;scene.settings.directionalLight=true;scene.settings.lightDirection={1,-2,0};
+    auto& board=Cube(scene,{0,.05f,0});board.transform.localScale={8,.1f,8};
+    board.AddComponent<Rigidbody>().useGravity=false;
+    Cube(scene,{-1,1,0});
+    // A cast shadow may reach receivers far below the depth range of its own group.
+    auto& parent=scene.CreateGameObject("Falling parent");parent.AddComponent<Rigidbody>();
+    auto& mover=Cube(scene,{0,0,0});mover.SetParent(&parent);parent.transform.position={0,80,0};
+    auto camera=GroundCamera();SceneRenderer cached,forced;ViewportTarget target;forced.SetShadowCachingEnabled(false);
+    auto capture=[&]{
+        auto actual=Capture(cached,target,scene,camera);
+        Equivalent(Capture(forced,target,scene,camera),actual,"directional caster groups match full redraw");
+        return actual;
+    };
+    const auto initial=capture();
+    Check(cached.GetShadowStats().faces==2,"Directional light fits separate stationary and falling caster layers");
+    for(float y:{72.f,60.f,48.f,36.f}){
+        parent.transform.position.y=y;
+        auto falling=capture();
+        Check(falling==initial,"Unrelated stationary ground and piece shadows stay pixel-identical throughout the fall");
+        Check(cached.GetShadowStats().faces==1&&cached.GetShadowDrawStats().submitted==2,
+              "Falling parent redraws only its child's two depth passes");
+    }
+    parent.transform.position={0,2,0};
+    const auto landed=capture();
+    Vector4 clip=camera.GetVPMatrix()*Vector4(.95f,.1f,0,1);
+    Vector2 pixel=(Vector2(clip)/clip.w*.5f+.5f)*float(Size);
+    size_t channel=4*(size_t(pixel.y)*Size+size_t(pixel.x));
+    Check(initial[channel]>landed[channel]+20,"Falling caster shadows the board beyond its own depth bounds");
+    parent.GetComponent<Rigidbody>()->enabled=false;
+    capture();Check(cached.GetShadowStats().faces==1,"Leaving the moving group rebuilds the remaining directional layer");
+    parent.GetComponent<Rigidbody>()->enabled=true;
+    capture();Check(cached.GetShadowStats().faces==2,"Restoring a moving layer rebuilds its layout");
+    capture();Check(cached.GetShadowStats().faces==0,"Both directional groups settle to cache hits");
+
+    // An interior caster can change while the stationary group's projection holds.
+    // Geometry on the other side of the board should not be submitted to the depth passes.
+    auto& interior=Cube(scene,{-2,1,0});Cube(scene,{3,1,0});capture();
+    interior.transform.position.z+=.05f;capture();
+    Check(cached.GetShadowStats().faces==1&&cached.GetShadowDrawStats().submitted<=6,
+          "Localized directional edits exclude unrelated objects from depth draws");
 }
 
 void FrozenReflection(){
@@ -228,6 +296,6 @@ int main(){GLFWwindow* window=nullptr;try{
     window=glfwCreateWindow(Size,Size,"Selective shadow invalidation regression",nullptr,nullptr);Check(window!=nullptr,"Hidden OpenGL context");
     glfwMakeContextCurrent(window);Check(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)!=0,"GL loader");
     RenderCommand::SetDepthTestEnabled(true);glDisable(GL_BLEND);glDisable(GL_CULL_FACE);glDisable(GL_DITHER);
-    MotionAndMembership();AppearanceAndGeometry();ParentsAndCaptureVolume();LightsDirectionalAndSceneSwitch();FrozenReflection();
+    MotionAndMembership();AppearanceAndGeometry();ParentsAndCaptureVolume();LightsDirectionalAndSceneSwitch();DirectionalMovingCasters();FrozenReflection();
     glfwDestroyWindow(window);glfwTerminate();std::cout<<"Selective/global/forced shadow histories passed: "<<comparisons<<" image comparisons\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';if(window)glfwDestroyWindow(window);glfwTerminate();return 1;}}

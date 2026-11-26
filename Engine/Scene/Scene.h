@@ -5,10 +5,12 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <stdexcept>
 #include <type_traits>
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <exception>
 #include <functional>
@@ -59,7 +61,11 @@ public:
     virtual std::optional<std::pair<Vector3,Vector3>> GeometryBounds()const{return std::nullopt;}
 };
 // Distinguishes layer groups from ordinary groups, including after a rename.
-struct SceneLayer : Component {};
+struct SceneLayer : Component {
+    enum Role { Legacy=-1, System=0, UI=1, Game=2 };
+    int role=Legacy; // Older scene files contain a marker with no role field.
+    bool Required()const{return role==System||role==UI;}
+};
 struct Anchor : Component {
     EntityID child=0;
     Transform transform;
@@ -176,6 +182,7 @@ public:
     GameObject* GetParent() const { RICE_BENCHMARK_FUNCTION(); return parent;}
     GameObject* GetGroup()const{ RICE_BENCHMARK_FUNCTION(); return group;}
     GameObject* GetHierarchyParent()const{ RICE_BENCHMARK_FUNCTION(); return group?group:parent;}
+    bool IsRequiredLayer()const{auto* layer=GetComponent<SceneLayer>();return layer&&layer->Required();}
     bool DependsOn(const GameObject* value)const{ RICE_BENCHMARK_FUNCTION(); return this==value||(parent&&parent->DependsOn(value))||(group&&group->DependsOn(value));}
     Vector3 GetLocalPivot()const{
         RICE_BENCHMARK_FUNCTION();
@@ -230,9 +237,10 @@ public:
         return value;
     }
     void SetWorldMatrix(const Matrix4& value){ RICE_BENCHMARK_FUNCTION(); auto base=GetParentMatrix();if(std::abs(glm::determinant(base))<1e-8f)throw std::runtime_error("Singular parent transform");auto p=GetLocalPivot();transform.SetMatrix(glm::translate(Matrix4(1),-p)*glm::inverse(base)*value*glm::translate(Matrix4(1),p));}
-    void SetParent(GameObject* value) { RICE_BENCHMARK_FUNCTION(); if(value&&value->owningScene!=owningScene)throw std::invalid_argument("Parent must belong to same scene");if(value&&value->DependsOn(this))throw std::invalid_argument("Hierarchy cycle");if(parent==value)return;if(parent)if(auto* a=parent->GetComponent<Anchor>();a&&a->child==id)a->child=0;parent=value;HierarchyChanged();}
+    void SetParent(GameObject* value) { RICE_BENCHMARK_FUNCTION(); if(value&&GetComponent<SceneLayer>())throw std::invalid_argument("Layers must be scene roots");if(value&&value->owningScene!=owningScene)throw std::invalid_argument("Parent must belong to same scene");if(value&&value->DependsOn(this))throw std::invalid_argument("Hierarchy cycle");if(parent==value)return;if(parent)if(auto* a=parent->GetComponent<Anchor>();a&&a->child==id)a->child=0;parent=value;HierarchyChanged();}
     void SetGroup(GameObject* value,bool preserveWorld=true){
         RICE_BENCHMARK_FUNCTION();
+        if(value&&GetComponent<SceneLayer>())throw std::invalid_argument("Layers must be scene roots");
         if(value&&(!value->isGroup||value->owningScene!=owningScene||value->DependsOn(this)))throw std::invalid_argument("Invalid group or group cycle");
         auto world=GetWorldMatrix();auto base=parent?parent->GetWorldMatrix():Matrix4(1);
         if(value&&(std::abs(glm::determinant(value->GetWorldMatrix()))<1e-8f||std::abs(glm::determinant(base))<1e-8f))throw std::runtime_error("Singular group transform");
@@ -248,6 +256,8 @@ public:
         else {
             static_assert(std::is_base_of_v<Component,T>);
             if(auto* old=GetComponent<T>())return *old;
+            if constexpr(std::is_same_v<T,SceneLayer>)
+                if(parent||group)throw std::invalid_argument("Layers must be scene roots");
             if(destroyingComponents)throw std::logic_error("Cannot attach to a destroyed object");
             if(!storage){
                 standaloneStorage=CreateScope<Storage>();
@@ -266,6 +276,7 @@ public:
                 if(result->removed&&deferredComponentFlush)
                     throw std::logic_error("Component removed during Awake");
             });
+            if constexpr(std::is_same_v<T,SceneLayer>)HierarchyChanged();
             return *result;
         }
     }
@@ -290,10 +301,13 @@ public:
     void RemoveComponent(Component& component) {
         RICE_BENCHMARK_FUNCTION();
         if(component.owner!=this)throw std::invalid_argument("Component belongs to another object");
+        if(auto* layer=dynamic_cast<SceneLayer*>(&component);layer&&layer->Required())
+            throw std::invalid_argument("Required layers cannot be removed");
         if(component.removed)return;
         for(auto& link:components)if(link.value==&component){
             link.retired=link.pool->Take(storageSlot);
             component.removed=true;
+            if(dynamic_cast<SceneLayer*>(&component))HierarchyChanged();
             return;
         }
     }
@@ -411,9 +425,41 @@ public:
     }
     uint64_t GetInstanceID()const{ RICE_BENCHMARK_FUNCTION(); return instance;}
     uint64_t GetHierarchyRevision()const{return hierarchyRevision;}
-    GameObject& CreateGameObject(std::string name="GameObject",EntityID id=0){
+    std::string UniqueObjectName(std::string requested,const GameObject* except=nullptr) const {
+        RICE_BENCHMARK_FUNCTION();
+        if(requested.empty())requested="New Object";
+        const auto taken=std::any_of(objects.begin(),objects.end(),[&](const auto& object){
+            return object.get()!=except&&!object->pendingDestroy&&object->name==requested;
+        });
+        if(!taken)return requested;
+
+        // Pasting a numbered copy continues the original series.
+        const auto open=requested.rfind(" (");
+        if(open!=std::string::npos&&requested.back()==')'){
+            auto digits=std::string_view(requested).substr(open+2,requested.size()-open-3);
+            if(!digits.empty()&&digits.front()!='0'&&digits.find_first_not_of("0123456789")==digits.npos)
+                requested.resize(open);
+        }
+        const auto prefix=requested+" (";
+        std::vector<bool> used(objects.size()+2,false);
+        for(const auto& object:objects){
+            const auto& name=object->name;
+            if(object.get()==except||object->pendingDestroy||!name.starts_with(prefix)||name.back()!=')')continue;
+            const char* first=name.data()+prefix.size();
+            const char* end=name.data()+name.size()-1;
+            if(first==end||*first=='0')continue;
+            size_t number=0;
+            const auto parsed=std::from_chars(first,end,number);
+            if(parsed.ec==std::errc{}&&parsed.ptr==end&&number<used.size())used[number]=true;
+        }
+        const auto free=std::find(used.begin()+1,used.end(),false);
+        return prefix+std::to_string(free-used.begin())+")";
+    }
+    GameObject& CreateGameObject(std::string name="New Object",EntityID id=0){
         RICE_BENCHMARK_FUNCTION();
         if(tearingDown)throw std::logic_error("Scene is being destroyed");
+        // Explicit IDs restore authored objects from a file or history, including legacy names.
+        if(!id)name=UniqueObjectName(std::move(name));
         auto object=CreateScope<GameObject>(std::move(name));
         if(id){
             object->id=id;
@@ -449,7 +495,7 @@ public:
     }
     void Destroy(EntityID id){
         RICE_BENCHMARK_FUNCTION();
-        if(auto* object=Find(id))MarkDestroyed(*object);
+        if(auto* object=Find(id);object&&!object->IsRequiredLayer())MarkDestroyed(*object);
     }
     void FlushDestroyed(){
         RICE_BENCHMARK_FUNCTION();

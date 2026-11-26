@@ -1,5 +1,5 @@
 #pragma once
-#include "Scene/Scene.h"
+#include "Project/SceneLayers.h"
 #include <set>
 #include <unordered_map>
 
@@ -14,6 +14,7 @@ private:
     uint64_t instance=0,revision=0,rebuilds=0,flattenings=0;
     std::unordered_map<EntityID,Node> nodes;
     std::vector<EntityID> roots;
+    std::vector<GameObject*> layers;
     std::set<EntityID> expanded,selection;
     EntityID selected=0;
     std::vector<Row> rows;
@@ -28,8 +29,11 @@ private:
             auto id=object->GetID();auto* parent=object->GetHierarchyParent();
             nodes.emplace(id,Node{object.get(),parent?parent->GetID():0,{}});order.push_back(id);
         }
+        layers=SceneLayers::Ordered(scene);
+        for(auto* layer:layers)roots.push_back(layer->GetID());
         for(auto id:order){auto& node=nodes.at(id);auto parent=nodes.find(node.parent);
-            if(parent!=nodes.end())parent->second.children.push_back(id);else roots.push_back(id);
+            if(parent!=nodes.end())parent->second.children.push_back(id);
+            else if(!node.object->GetComponent<SceneLayer>())roots.push_back(id);
         }
         std::erase_if(expanded,[&](EntityID id){return !nodes.contains(id);});
         revision=scene.GetHierarchyRevision();++rebuilds;rowsDirty=true;
@@ -82,6 +86,7 @@ public:
         if(rowsDirty)Flatten();
     }
     const std::vector<Row>& Rows()const{return rows;}
+    const std::vector<GameObject*>& Layers()const{return layers;}
     bool HasChildren(EntityID id)const{auto found=nodes.find(id);return found!=nodes.end()&&!found->second.children.empty();}
     bool Expanded(EntityID id)const{return expanded.contains(id);}
     void SetExpanded(EntityID id,bool value){

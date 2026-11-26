@@ -12,6 +12,7 @@ int main(){try{
     auto aw=a.GetWorldMatrix(),bw=b.GetWorldMatrix();
     auto gid=EditorGroups::Create(e,{aid,bid});auto* g=e.scene->Find(gid);
     Check(g&&g->isGroup&&g->GetParent()==&p,"Group is parentable object");
+    Check(g->name=="New Object","New grouping objects use the default object name");
     Check(a.GetParent()==&p&&a.GetGroup()==g&&Near(a.GetWorldMatrix(),aw)&&Near(b.GetWorldMatrix(),bw),"Group preserves original parent and world");
     auto [low,high]=GizmoMath::SpaceBounds(*g,Matrix4(1));Check(glm::length(high-low-Vector3(5,1,1))<.001f,"Group world bounds");
     auto initial=g->GetWorldMatrix();g->transform.rotation={0,0,35};g->transform.localScale={2,1,3};g->transform.position+=Vector3(1,2,0);
@@ -68,5 +69,28 @@ int main(){try{
     Check(invalid&&order.Snapshot()==unchanged,"Invalid descendant drop cannot mutate scene");
     auto groupOrder=EditorGroups::Create(order,{nestedChild,destinationChild});auto memberWorld=order.scene->Find(destinationChild)->GetWorldMatrix();
     EditorGroups::InsertSibling(order,destinationChild,nestedChild,false);Check(siblingOrder(*order.scene,groupOrder)==std::vector<EntityID>{destinationChild,nestedChild}&&Near(order.scene->Find(destinationChild)->GetWorldMatrix(),memberWorld),"Group siblings reorder without rebinding transforms");
+    EditorSession layers(registry);SceneLayers::CreateDefaults(*layers.scene);
+    auto defaults=SceneLayers::Ordered(*layers.scene);
+    Check(defaults.size()==3,"A layered scene starts with three layers");
+    auto* system=defaults[0];auto* ui=defaults[1];auto* game=defaults[2];
+    auto& extra=SceneLayers::Create(*layers.scene,"Game");
+    auto& piece=layers.scene->CreateGameObject("Piece");SceneLayers::PlaceRoot(piece,game);
+    auto& board=layers.scene->CreateGameObject("Board");SceneLayers::PlaceRoot(board,&extra);
+    const auto initialLayers=layers.Snapshot();
+    for(auto* parent:{game,&piece}){
+        bool refused=false;try{EditorGroups::Reparent(extra,parent);}catch(const std::invalid_argument&){refused=true;}
+        Check(refused,"Layers cannot become children of layers or objects");
+    }
+    Check(!EditorGroups::Create(layers,{ui->GetID(),piece.GetID()}),"Grouping a mixed selection cannot nest a layer");
+    EditorGroups::Ungroup(layers,system->GetID());
+    EditorGroups::InsertSibling(layers,piece.GetID(),game->GetID(),true);
+    EditorGroups::InsertSibling(layers,game->GetID(),ui->GetID(),false);
+    Check(layers.Snapshot()==initialLayers,"Reserved slots and layer membership survive invalid hierarchy edits");
+    EditorGroups::InsertSibling(layers,extra.GetID(),game->GetID(),false);
+    Check(SceneLayers::Ordered(*layers.scene)==std::vector<GameObject*>{system,ui,&extra,game},"Game layers reorder below the two required slots");
+    auto crossGroup=EditorGroups::Create(layers,{piece.GetID(),board.GetID()});
+    Check(crossGroup&&layers.scene->Find(crossGroup)->GetHierarchyParent()==game,"A cross-layer group belongs to its first object's layer");
+    EditorGroups::Ungroup(layers,crossGroup);
+    Check(piece.GetHierarchyParent()==game&&board.GetHierarchyParent()==&extra,"Ungroup restores the objects' original layer membership");
     std::cout<<"Group hierarchy, bounds, affine transforms, serialization, clipboard and undo passed\n";return 0;
 }catch(const std::exception& ex){std::cerr<<ex.what()<<'\n';return 1;}}

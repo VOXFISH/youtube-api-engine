@@ -9,7 +9,6 @@
 #include <set>
 #include <functional>
 namespace Rice {
-struct Rigidbody:Component {Vector3 velocity{0};float mass=1,restitution=0;bool useGravity=true,kinematic=false;};
 struct SpriteAnimator:Component {int columns=1,rows=1,frames=1;float fps=8;bool loop=true,playing=true;float clock=0;int frame=0;
     void OnPoolAcquire() override{ RICE_BENCHMARK_FUNCTION(); clock=0;frame=0;}
     void Update(float dt) override{ RICE_BENCHMARK_FUNCTION(); if(!playing)return;clock+=dt;int total=std::clamp(frames,1,std::clamp(columns,1,1024)*std::clamp(rows,1,1024));clock=std::fmod(clock,100000.f);int next=int(clock*glm::clamp(fps,0.f,120.f));frame=loop?next%total:std::min(next,total-1);}
