@@ -20,6 +20,7 @@
 #include "Renderer/Texture.h"
 #include <limits>
 #include <map>
+#include <span>
 namespace Rice {
 struct MeshRenderer : Component {
     bool castsShadow=true;
@@ -261,8 +262,7 @@ void main(){
             ++shadowDrawStats.drawCalls;shadowDrawStats.instances+=instances.size();
         }
     }
-    void PrepareShadows(Scene& scene){
-        shadowDrawStats={};shadowCasterCount=0;
+    void CollectSceneLights(const Scene& scene){
         preparedLights.clear();
         if(scene.settings.directionalLight){
             auto direction=scene.settings.lightDirection;if(glm::length(direction)<.0001f)direction={0,-1,0};
@@ -270,6 +270,21 @@ void main(){
         }
         for(auto& object:scene.GetObjects())if(object->IsActive())if(auto* light=object->GetComponent<Light>();light&&light->enabled&&preparedLights.size()<8)
             preparedLights.push_back({object->GetID(),light->type==1?1:0,light->WorldPosition(),light->WorldDirection(),Vector3(light->color)*glm::max(light->intensity,0.f),std::max(light->range,.001f),shadowsEnabled&&light->castsShadow});
+    }
+    void BindSceneLights()const{
+        for(size_t i=0;i<preparedLights.size();++i){
+            const auto& light=preparedLights[i];
+            auto index="["+std::to_string(i)+"]";
+            shader->SetUniformInt("lightType"+index,light.type);
+            shader->SetUniformFloat4("lightPositionRange"+index,Vector4(light.position,light.range));
+            shader->SetUniformFloat3("lightDirection"+index,light.direction);
+            shader->SetUniformFloat3("lightColor"+index,light.color);
+        }
+        shader->SetUniformInt("lightCount",static_cast<int>(preparedLights.size()));
+    }
+    void PrepareShadows(Scene& scene){
+        shadowDrawStats={};shadowCasterCount=0;
+        CollectSceneLights(scene);
         bool active=std::any_of(preparedLights.begin(),preparedLights.end(),[](const auto& light){return light.castsShadow;});
         ShadowInvalidation::Snapshot snapshot;
         auto& stamp=snapshot.data;auto& textures=snapshot.textures;
@@ -487,13 +502,16 @@ layout(location=3) in mat4 instanceWorld; layout(location=7) in vec4 instanceCol
 uniform ivec2 objectOwner;flat out uvec2 receiverOwner;
 uniform int u_Instanced; uniform vec4 color; out vec4 vertexColor;
 uniform mat4 u_ViewProjection,u_Transform; uniform vec4 uvRect; out vec3 N; out vec3 worldPosition; out vec2 UV; out vec3 localNormal; out vec3 localPosition;
+uniform int useShapeWorld; uniform mat4 shapeWorld;
 void main(){mat4 transform=u_Instanced==1?instanceWorld:u_Transform;vertexColor=u_Instanced==1?instanceColor:color;
 receiverOwner=uvec2(u_Instanced==1?instanceOwner:objectOwner);
-localNormal=normal;localPosition=position;vec4 world=transform*vec4(position,1);worldPosition=world.xyz;gl_Position=u_ViewProjection*world;N=transpose(inverse(mat3(transform)))*normal;UV=uvRect.xy+uv*uvRect.zw;}
+localNormal=normal;localPosition=position;vec4 world=transform*vec4(position,1);gl_Position=u_ViewProjection*world;
+if(useShapeWorld==1){transform=shapeWorld;world=transform*vec4(position,1);}
+worldPosition=world.xyz;N=transpose(inverse(mat3(transform)))*normal;UV=uvRect.xy+uv*uvRect.zw;}
 )",std::string(R"(#version 330 core
 in vec3 N; in vec3 worldPosition; in vec2 UV; in vec4 vertexColor; flat in uvec2 receiverOwner; out vec4 result;
 uniform vec3 lightColor[8], lightDirection[8]; uniform vec4 lightPositionRange[8]; uniform int lightType[8]; uniform int lightCount, sprite, textured; uniform sampler2D image;
-uniform int useMaterial, unlit;
+uniform int useMaterial, unlit, shapeHighlight;
 uniform int useReflection, flatReflection;
 uniform vec4 flatReflectionPlane;
 )" )+ReflectionIntersectionGLSL+ShadowSamplingGLSL+R"(
@@ -524,6 +542,7 @@ vec3 cookTorrance(vec3 base,vec3 n,vec3 v,vec3 l,float nl){
     return (1.0-fresnel)*(1.0-metallicity)*base/pi+specular;
 }
 void main(){vec4 c=vertexColor;if(textured==1)c*=texture(image,sprite==1?UV:materialUV());if(c.a<0.1)discard;
+if(shapeHighlight==1)c.rgb=mix(c.rgb,vec3(1.0,.72,.82),.72);
 if(sprite==1 || unlit==1){ result=c; return; }
 vec3 normal=normalize(N);
 vec3 viewOffset=cameraPosition-worldPosition;
@@ -559,21 +578,53 @@ if(useMaterial==1 && useReflection==1){
 result=vec4(light,c.a);}
 )"));
     }
-    void RenderShape(MeshRenderer& mesh,const Camera& camera,Material* material=nullptr,Vector3 pivot=Vector3(0)){
+    void RenderShape(MeshRenderer& mesh,const Camera& camera,Material* material=nullptr,Vector3 pivot=Vector3(0),
+                     std::span<const uint32_t> highlightedTriangles={},const GameObject* lightingSource=nullptr){
         RICE_BENCHMARK_FUNCTION();
         Renderer::BeginScene(camera);shader->Bind();
         shader->SetUniformInt("u_Instanced",0);
-        shader->SetUniformInt("unlit",1);shader->SetUniformInt("sprite",0);
+        shader->SetUniformInt("unlit",lightingSource?0:1);shader->SetUniformInt("sprite",0);
+        shader->SetUniformInt("useShapeWorld",lightingSource?1:0);shader->SetUniformInt("shapeHighlight",0);
         ShadowMaps::SetSamplerUnits(shader);shader->SetUniformInt("shadowLightCount",0);
         shader->SetUniformInt("environmentMap",1);shader->SetUniformInt("reflectionGeometry",2);
         shader->SetUniformInt("useMaterial",0);shader->SetUniformInt("useReflection",0);
-        shader->SetUniformInt("lightCount",0);shader->SetUniformInt("cubeLayout",0);
+        shader->SetUniformInt("cubeLayout",0);
+        if(lightingSource){
+            CollectSceneLights(lightingSource->GetScene());
+            if(preparedLights.empty())preparedLights.push_back({0,1,Vector3(0),glm::normalize(Vector3(-.4f,-1,-.7f)),Vector3(1.5f),1.f,false});
+            BindSceneLights();
+            // Project the editable mesh in its local viewport, but evaluate its lights,
+            // view direction and inverse-transpose normals in the source object's world.
+            auto world=lightingSource->GetWorldMatrix();
+            if(glm::determinant(Matrix3(world))==0.f)
+                world=glm::translate(Matrix4(1),Vector3(world[3]))*glm::mat4_cast(lightingSource->GetWorldRotation());
+            shader->SetUniformMat4("shapeWorld",world);
+            shader->SetUniformFloat3("cameraPosition",Vector3(world*Vector4(camera.GetPosition()+pivot,1)));
+        }else shader->SetUniformInt("lightCount",0);
         shader->SetUniformFloat4("color",mesh.color);shader->SetUniformFloat4("uvRect",{0,0,1,1});
         auto base=MaterialSettings(material);auto array=CustomArray(mesh);auto transform=glm::translate(Matrix4(1),-pivot);
+        auto highlight=highlightedTriangles.begin();
         mesh.triangleMaterials.Runs(static_cast<uint32_t>(mesh.custom.indices.size()/3),base,[&](uint32_t first,uint32_t count,const SurfaceMaterial& value){
             auto texture=value.enabled?value.albedoTexture:nullptr;
+            if(lightingSource){
+                shader->SetUniformInt("useMaterial",value.enabled);
+                shader->SetUniformFloat("metallicity",std::clamp(value.metallicity,0.f,1.f));
+                shader->SetUniformFloat("roughness",std::clamp(value.roughness,.045f,1.f));
+            }
             shader->SetUniformInt("textured",texture?1:0);shader->SetUniformInt("image",0);if(texture)texture->Bind(0);
-            Renderer::Submit(shader,array,transform,count,first);
+            // Both the highlighted triangle IDs and material runs follow index-buffer order.
+            const uint32_t end=(first+count)/3;
+            uint32_t triangle=first/3;
+            while(highlight!=highlightedTriangles.end()&&*highlight<end){
+                const uint32_t start=*highlight;
+                if(triangle<start)Renderer::Submit(shader,array,transform,(start-triangle)*3,triangle*3);
+                triangle=start;
+                do{++highlight;++triangle;}while(highlight!=highlightedTriangles.end()&&*highlight==triangle&&triangle<end);
+                shader->SetUniformInt("shapeHighlight",1);
+                Renderer::Submit(shader,array,transform,(triangle-start)*3,start*3);
+                shader->SetUniformInt("shapeHighlight",0);
+            }
+            if(triangle<end)Renderer::Submit(shader,array,transform,(end-triangle)*3,triangle*3);
         });Renderer::EndScene();
     }
     void Render(Scene& scene,const Camera& camera,bool capturing=false,EntityID excluded=0,bool editorGuides=false) {
@@ -679,30 +730,15 @@ result=vec4(light,c.a);}
         // Recursive reflection captures finish first; expose this view's submissions only.
         renderStats={};
         bool oldSeamless=glIsEnabled(GL_TEXTURE_CUBE_MAP_SEAMLESS);
-        Renderer::BeginScene(camera); shader->Bind(); int count=0;
+        Renderer::BeginScene(camera); shader->Bind();
         shadowMaps.Bind(shader);
         shader->SetUniformInt("reflectionGroundEnabled",scene.settings.ground);
         shader->SetUniformInt("u_Instanced",0);
         shader->SetUniformInt("unlit",0);
-        if(scene.settings.directionalLight){
-            auto direction=scene.settings.lightDirection;
-            if(glm::length(direction)<.0001f)direction={0,-1,0};
-            shader->SetUniformInt("lightType[0]",1);
-            shader->SetUniformFloat4("lightPositionRange[0]",{0,0,0,1});
-            shader->SetUniformFloat3("lightDirection[0]",glm::normalize(direction));
-            shader->SetUniformFloat3("lightColor[0]",Vector3(scene.settings.lightColor)*glm::max(scene.settings.lightIntensity,0.f));++count;
-        }
-        for(auto& obj:scene.GetObjects()) if(obj->IsActive()) if(auto* l=obj->GetComponent<Light>();l && l->enabled && count<8) {
-            Vector3 direction=l->WorldDirection();
-            if(glm::length(direction)<.0001f) direction={0,-1,0};
-            shader->SetUniformInt("lightType["+std::to_string(count)+"]",l->type==1?1:0);
-            shader->SetUniformFloat4("lightPositionRange["+std::to_string(count)+"]",Vector4(l->WorldPosition(),std::max(l->range,.001f)));
-            shader->SetUniformFloat3("lightDirection["+std::to_string(count)+"]",glm::normalize(direction));
-            shader->SetUniformFloat3("lightColor["+std::to_string(count)+"]",Vector3(l->color)*glm::max(l->intensity,0.f)); ++count;
-        }
+        shader->SetUniformInt("useShapeWorld",0);shader->SetUniformInt("shapeHighlight",0);
+        BindSceneLights();
         shader->SetUniformInt("environmentMap",1);
         shader->SetUniformInt("reflectionGeometry",2);
-        shader->SetUniformInt("lightCount",count);
         shader->SetUniformFloat3("cameraPosition",camera.GetPosition());
         CubeMaterial pendingMaterial;
         std::vector<GameObject*> viewObjects;

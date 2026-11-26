@@ -51,7 +51,7 @@ void OpenScriptFile(const std::filesystem::path& script,const std::filesystem::p
     auto arguments=L"\""+source.native()+L"\"";
     auto target=editor.empty()?source:editor;
     auto result=ShellExecuteW(GetActiveWindow(),L"open",target.c_str(),editor.empty()?nullptr:arguments.c_str(),nullptr,SW_SHOWNORMAL);
-    if(reinterpret_cast<INT_PTR>(result)<=32)throw std::runtime_error("Cannot open script. Choose an editor in Options > Script editor.");
+    if(reinterpret_cast<INT_PTR>(result)<=32)throw std::runtime_error("Cannot open script. Choose an editor in Settings > Script editor.");
 }
 static std::optional<std::filesystem::path> PickDocument(bool save,const std::filesystem::path& suggested,
         const wchar_t* filter,const wchar_t* extension,const wchar_t* title){

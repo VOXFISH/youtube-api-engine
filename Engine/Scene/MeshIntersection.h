@@ -12,10 +12,11 @@ class MeshIntersection {
     void Trace(Vector3 origin,Vector3 direction,float& closest)const {
         tree.TraceRay(origin,direction,closest,[&](size_t t,float& nearest){
             const auto& tri=triangles[t];auto e1=tri.b-tri.a,e2=tri.c-tri.a,p=glm::cross(direction,e2);
-            float determinant=glm::dot(e1,p);if(std::abs(determinant)<1e-10f)return;
+            float determinant=glm::dot(e1,p);
+            if(std::abs(determinant)<=std::numeric_limits<float>::epsilon()*glm::length(e1)*glm::length(p))return;
             auto offset=origin-tri.a;float u=glm::dot(offset,p)/determinant;if(u<-.00001f||u>1.00001f)return;
             auto q=glm::cross(offset,e1);float v=glm::dot(direction,q)/determinant;if(v<-.00001f||u+v>1.00001f)return;
-            float distance=glm::dot(e2,q)/determinant;if(distance>1e-6f&&distance<nearest)nearest=distance;
+            float distance=glm::dot(e2,q)/determinant;if(distance>0.f&&distance<nearest)nearest=distance;
         });
     }
 public:

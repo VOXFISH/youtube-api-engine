@@ -53,6 +53,7 @@ public:
     Vector3 Up()const{ RICE_BENCHMARK_FUNCTION(); return glm::normalize(glm::cross(Right(),Forward()));}
     void Move(Vector3 input,float dt){ RICE_BENCHMARK_FUNCTION(); auto delta=Right()*input.x+Vector3(0,1,0)*input.y+Forward()*input.z;if(glm::length(delta)>1e-6f)position+=glm::normalize(delta)*5.f*std::clamp(dt,0.f,.1f);}
     void Zoom(float distance){ RICE_BENCHMARK_FUNCTION(); position+=Forward()*distance;}
+    void SetClipPlanes(float nearPlane,float farPlane){nearClip=nearPlane;farClip=farPlane;}
     void Look(Vector2 pixels){ RICE_BENCHMARK_FUNCTION(); yaw=std::remainder(yaw+pixels.x*.2f,360.f);pitch=std::clamp(pitch-pixels.y*.2f,-89.f,89.f);}
     void Orbit(Vector3 pivot,Vector2 pixels){
         RICE_BENCHMARK_FUNCTION();

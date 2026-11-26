@@ -21,7 +21,7 @@ struct SceneInspectorTestAccess {
         inspector.DrawObjectProperty(workspace,object,label,property);
     }
     static void EndFrame(SceneInspector& inspector,Workspace& workspace){inspector.EndFrameEdits(workspace);}
-    static void Settings(SceneInspector& inspector,Workspace& workspace){inspector.SceneControls(workspace);}
+    static void Settings(SceneInspector& inspector,Workspace& workspace){inspector.DrawSceneSettings(workspace);}
     static void QueueMaterial(SceneInspector& inspector,Workspace& workspace,GameObject& object){
         auto value=MaterialSettings(object.GetComponent<Material>());value.roughness=.9f;
         inspector.materialPrompt.Queue(*workspace.editor.scene,object,value);
@@ -66,13 +66,13 @@ struct SnapshotProbe : Component {int value=0;};
 struct Fixture {
     Workspace workspace;
     SceneInspector inspector;
-    EntityID objectID;
+    EntityID objectID=0;
     ImVec2 origin{};
     bool popup=false,playback=false,properties=false,settings=false,fullEditor=false;
     ImVec2 numberOrigin{},nameOrigin{};
     std::string component="Light";
-    Fixture(const fs::path& root):workspace(root,true){
-        auto& object=workspace.editor.scene->CreateGameObject("Footer test");objectID=object.GetID();object.AddComponent<Light>();
+    Fixture(const fs::path& root,bool addTestObject=true):workspace(root,true){
+        if(addTestObject){auto& object=workspace.editor.scene->CreateGameObject("Footer test");objectID=object.GetID();object.AddComponent<Light>();}
         ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize={800,600};io.DeltaTime=1.f/60;
         io.ConfigInputTrickleEventQueue=false;
         unsigned char* pixels;int width,height;io.Fonts->GetTexDataAsRGBA32(&pixels,&width,&height);
@@ -349,10 +349,45 @@ void TestEmptyEditor(const fs::path& output){
     ImGui::DestroyContext();
 }
 
+void TestChessSettingsMenu(const fs::path& output){
+    auto source=fs::path(__FILE__).parent_path().parent_path().parent_path()/"Projects"/"Chess";
+    auto project=output/"ChessMenu"/"Chess";
+    fs::create_directories(project);
+    fs::copy_file(source/"Chess.rice",project/"Chess.rice",fs::copy_options::overwrite_existing);
+    fs::copy(source/"Assets",project/"Assets",fs::copy_options::recursive|fs::copy_options::overwrite_existing);
+    Fixture test(project/"Chess.rice",false);
+    SceneInspectorTestAccess::ConfigureHeadless(test.inspector);test.fullEditor=true;
+    auto& editor=test.workspace.editor;
+    const auto& objects=editor.scene->GetObjects();
+    auto pawn=std::find_if(objects.begin(),objects.end(),[](const auto& object){return object->name=="pawn1";});
+    Check(pawn!=objects.end()&&(*pawn)->GetComponent<MeshRenderer>(),"The Chess workspace loads its saved pawn");
+    test.Draw();test.Draw();
+    auto& gui=*ImGui::GetCurrentContext();
+    auto* bar=ImGui::FindWindowByName("##MainMenuBar");
+    ImGuiID barScope=ImHashStr("##MenuBar",0,bar->ID);
+    Check(gui.MenusIdSubmittedThisFrame.contains(ImHashStr("Settings",0,barScope))&&
+          !gui.MenusIdSubmittedThisFrame.contains(ImHashStr("Options",0,barScope)),"Chess shows one top-level settings menu");
+    test.Click(test.FindToolbar("Settings"));test.Draw();
+    Check(gui.OpenPopupStack.Size==1&&gui.OpenPopupStack[0].Window,"The top Settings menu opens on Chess");
+    auto* menu=gui.OpenPopupStack[0].Window;
+    for(auto label:{"Scene","Streaming","Script editor"})
+        Check(gui.MenusIdSubmittedThisFrame.contains(menu->GetID(label)),"Settings contains the scene, streaming and script editor sections");
+
+    auto scene=test.FindMenu("Scene",0);
+    for(int i=0;i<30;++i)test.Draw(scene);
+    auto light=test.FindMenu("Default directional light",1);
+    bool initial=editor.scene->settings.directionalLight;
+    test.Click(light);
+    Check(editor.scene->settings.directionalLight!=initial,"Settings > Scene edits the loaded Chess light");
+    editor.Undo();
+    Check(editor.scene->settings.directionalLight==initial,"A scene setting from the menu supports undo");
+}
+
 int main(int argc,char** argv){try{
     Check(argc==2,"Test directory required");
     TestSceneCameraOrbit();
     TestEmptyEditor(fs::path(argv[1]));TestProjectClose(fs::path(argv[1]));
+    TestChessSettingsMenu(fs::path(argv[1]));
     TestComponentControls(fs::path(argv[1]));TestEditEvents(fs::path(argv[1]));TestIdleEditor(fs::path(argv[1]));TestSceneSettings(fs::path(argv[1]));TestMaterialProposalHistory(fs::path(argv[1]));
     std::cout<<"Inspector component actions passed\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

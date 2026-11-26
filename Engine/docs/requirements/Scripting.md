@@ -34,7 +34,7 @@
 | `Save → Save as Preset` | 현재 편집본과 일치하는 컴파일 성공본의 C++ 텍스트를 프리셋으로 보관한다. 저장 이후 편집했다면 “Save this script before creating a preset.”을 표시한다. |
 | `Load → Load File...` | 선택한 파일을 읽고 검증한 뒤 단일 파일 연결을 교체한다. 취소하거나 실패하면 기존 연결과 편집본을 유지한다. |
 | `Load → Load Preset...` | 프리셋 불러오기는 C++ 텍스트를 복사하는 것과 같다. 원본과의 연결은 생기지 않는다. 현재 문맥에 연결되지 않은 외부 대상·정책은 빈칸으로 두고 영어 오류를 표시한다. 저장 전까지 채울 수 있으며, 필수 연결이 비어 있으면 저장 검증에서 위치를 알려준다. |
-| `Open in C++` | 연결된 C++ 원문 파일을 지정 IDE에서 연다. 기존 `Options → Script editor` 설정과 파일 실행 경로를 재사용한다. [기존 IDE 실행 기능](../../Platform/Windows/WindowsFileDialog.cpp) |
+| `Open in C++` | 연결된 C++ 원문 파일을 `Settings → Script editor`에서 지정한 IDE로 연다. [기존 IDE 실행 기능](../../Platform/Windows/WindowsFileDialog.cpp) |
 
 ### 2.1 닫기 경고
 

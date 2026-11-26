@@ -5,22 +5,48 @@
 #include <imgui_internal.h>
 
 namespace Rice {
-inline bool DrawMaterialFields(SurfaceMaterial& value,AssetDatabase* assets){
-    bool changed=ImGui::Checkbox("Enabled",&value.enabled);
-    changed|=ImGui::SliderFloat("Metalicity",&value.metallicity,0.f,1.f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
-    changed|=ImGui::SliderFloat("Roughness",&value.roughness,0.f,1.f,"%.3f",ImGuiSliderFlags_AlwaysClamp);
-    std::string display=value.albedoAsset.empty()?"None":"Missing asset";
-    if(assets)for(const auto& entry:assets->Entries())if(entry.id==value.albedoAsset){auto text=entry.path.generic_u8string();display.assign(text.begin(),text.end());}
+struct MaterialFieldMask {
+    bool enabled=false,metallicity=false,roughness=false,albedo=false;
+    bool Any()const{return enabled||metallicity||roughness||albedo;}
+};
+inline MaterialFieldMask DrawMaterialScalars(SurfaceMaterial& value,const MaterialFieldMask& mixed={}){
+    MaterialFieldMask changed;
+    bool enabled=mixed.enabled?false:value.enabled;
+    if(mixed.enabled)ImGui::PushItemFlag(ImGuiItemFlags_MixedValue,true);
+    changed.enabled=ImGui::Checkbox("Enabled",&enabled);
+    if(mixed.enabled)ImGui::PopItemFlag();
+    if(changed.enabled)value.enabled=enabled;
+
+    auto slider=[](const char* label,float& number,bool mixedValue){
+        bool edited=ImGui::SliderFloat(label,&number,0.f,1.f,mixedValue?"Mixed":"%.3f",ImGuiSliderFlags_AlwaysClamp);
+        // Clicking the current thumb in a mixed field also assigns that value
+        // to the other faces. Ctrl-click enters numeric input first.
+        return edited||(mixedValue&&ImGui::IsItemActivated()&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&
+            !ImGui::TempInputIsActive(ImGui::GetItemID()));
+    };
+    changed.metallicity=slider("Metalicity",value.metallicity,mixed.metallicity);
+    changed.roughness=slider("Roughness",value.roughness,mixed.roughness);
+    return changed;
+}
+inline bool DrawMaterialAlbedo(SurfaceMaterial& value,AssetDatabase* assets,bool mixed=false,bool reapply=false){
+    bool changed=false;
+    std::string display=mixed?"Mixed":value.albedoAsset.empty()?"None":"Missing asset";
+    if(assets&&!mixed)for(const auto& entry:assets->Entries())if(entry.id==value.albedoAsset){auto text=entry.path.generic_u8string();display.assign(text.begin(),text.end());}
     if(ImGui::BeginCombo("Albedo / Cubemap",display.c_str())){
-        if(ImGui::Selectable("None",value.albedoAsset.empty())){changed|=!value.albedoAsset.empty();value.albedoAsset.clear();}
+        if(ImGui::Selectable("None",!mixed&&value.albedoAsset.empty())){changed=mixed||!value.albedoAsset.empty();value.albedoAsset.clear();}
         if(assets)for(const auto& entry:assets->Entries()){
             auto text=entry.path.generic_u8string();std::string label(text.begin(),text.end());
-            if(ImGui::Selectable(label.c_str(),value.albedoAsset==entry.id)){changed|=value.albedoAsset!=entry.id;value.albedoAsset=entry.id;}
+            if(ImGui::Selectable(label.c_str(),!mixed&&value.albedoAsset==entry.id)){changed=reapply||mixed||value.albedoAsset!=entry.id;value.albedoAsset=entry.id;}
         }
         ImGui::EndCombo();
     }
-    if(value.albedoTexture)ImGui::Text("Detected: %s",CubemapLayoutName(DetectCubemapLayout(value.albedoTexture->GetWidth(),value.albedoTexture->GetHeight())));
+    if(!mixed&&!changed&&value.albedoTexture)ImGui::Text("Detected: %s",CubemapLayoutName(DetectCubemapLayout(value.albedoTexture->GetWidth(),value.albedoTexture->GetHeight())));
     return changed;
+}
+inline bool DrawMaterialFields(SurfaceMaterial& value,AssetDatabase* assets){
+    auto changed=DrawMaterialScalars(value);
+    changed.albedo=DrawMaterialAlbedo(value,assets);
+    return changed.Any();
 }
 struct MaterialOverwritePrompt {
     EntityID target=0;

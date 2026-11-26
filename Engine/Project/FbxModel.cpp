@@ -1,6 +1,7 @@
 #include "Project/FbxModel.h"
 #include "Project/ProjectFile.h"
 #include <ufbx.h>
+#include <cmath>
 #include <string_view>
 
 namespace Rice {
@@ -15,6 +16,14 @@ Vector3 Offset(ufbx_vec3 point, ufbx_vec3 origin) {
     if (!std::isfinite(delta.x) || !std::isfinite(delta.y) || !std::isfinite(delta.z))
         throw std::runtime_error("The FBX contains an invalid position.");
     return delta;
+}
+
+Vector3 CornerNormal(const ufbx_vertex_vec3& normals, uint32_t corner, const ufbx_matrix& matrix) {
+    const auto source = ufbx_get_vertex_vec3(&normals, corner);
+    const auto n = ufbx_transform_direction(&matrix, source);
+    const auto length = std::hypot(n.x, n.y, n.z);
+    if (!(length > 0) || !std::isfinite(length)) return Vector3(0); // Use the geometric face normal.
+    return Vector3(float(n.x / length), float(n.y / length), float(n.z / length));
 }
 
 class ModelReader {
@@ -69,9 +78,12 @@ class ModelReader {
         auto& result = part.mesh;
         result.indices.reserve(group.num_triangles * 3);
         result.uv.reserve(group.num_triangles * 3);
+        if (mesh.vertex_normal.exists) result.normals.reserve(group.num_triangles * 3);
         std::unordered_map<uint32_t, uint32_t> vertices;
+        std::unordered_map<uint32_t, size_t> faceGroups;
         std::vector<uint32_t> corners;
         const bool mirrored = ufbx_matrix_determinant(&node.geometry_to_world) < 0;
+        const auto normalMatrix = ufbx_matrix_for_normals(&node.geometry_to_world);
         for (uint32_t faceId : group.face_indices) {
             if (mesh.face_hole.count && mesh.face_hole.data[faceId]) continue;
             const auto face = mesh.faces.data[faceId];
@@ -83,11 +95,27 @@ class ModelReader {
             // Bail out before expanding repeated mesh instances beyond the scene capacity.
             if (size_t(triangles) * 3 > remainingCorners) throw std::runtime_error("FBX meshes exceed the scene size limit.");
             remainingCorners -= size_t(triangles) * 3;
+            // FBX polygon groups are independent of the material part used to
+            // split scene objects. Every triangle cut from a polygon inherits it.
+            if (faceId < mesh.face_group.count) {
+                const uint32_t index = mesh.face_group.data[faceId];
+                if (index >= mesh.face_groups.count) throw std::runtime_error("Invalid FBX polygon group in " + part.name);
+                const auto& source = mesh.face_groups.data[index];
+                if (source.id >= 0) {
+                    auto [entry, added] = faceGroups.try_emplace(index, result.faceGroups.size());
+                    if (added) result.faceGroups.push_back({
+                        source.name.length ? Text(source.name) : "Group " + std::to_string(source.id), {}});
+                    auto& members = result.faceGroups[entry->second].triangles;
+                    const auto first = static_cast<uint32_t>(result.indices.size() / 3);
+                    for (uint32_t i = 0; i < triangles; ++i) members.push_back(first + i);
+                }
+            }
             for (size_t i = 0; i < size_t(triangles) * 3; i += 3) {
                 if (mirrored) std::swap(corners[i + 1], corners[i + 2]);
                 for (size_t k = i; k < i + 3; ++k) {
                     const auto corner = corners[k];
                     const auto vertex = mesh.vertex_indices.data[corner];
+                    if (vertex >= mesh.vertices.count) throw std::runtime_error("Missing FBX vertex position in " + part.name);
                     auto [it, inserted] = vertices.try_emplace(vertex, static_cast<uint32_t>(result.positions.size()));
                     if (inserted) {
                         if (result.positions.size() >= 100000) throw std::runtime_error("FBX mesh exceeds 100,000 vertices: " + part.name);
@@ -95,6 +123,8 @@ class ModelReader {
                         result.positions.push_back(Offset(world, pivot));
                     }
                     result.indices.push_back(it->second);
+                    if (mesh.vertex_normal.exists)
+                        result.normals.push_back(CornerNormal(mesh.vertex_normal, corner, normalMatrix));
                     auto texcoord = uv->exists ? ufbx_get_vertex_vec2(uv, corner) : ufbx_vec2{};
                     if (texture) {
                         auto mapped = ufbx_transform_position(&texture->uv_to_texture, {texcoord.x, texcoord.y, 0});
@@ -153,6 +183,8 @@ std::vector<FbxPart> ReadFbx(const std::filesystem::path& path) {
     options.target_axes = ufbx_axes_right_handed_y_up;
     options.target_unit_meters = 1;
     options.handedness_conversion_axis = UFBX_MIRROR_AXIS_X;
+    // A gap in an authored normal layer must yield a zero vector for that corner.
+    options.index_error_handling = UFBX_INDEX_ERROR_HANDLING_NO_INDEX;
     options.ignore_animation = true;
     options.skip_skin_vertices = true;
     options.node_depth_limit = 256;

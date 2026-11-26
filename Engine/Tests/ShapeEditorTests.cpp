@@ -1,8 +1,11 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include "Editor/ShapeEditor.h"
+#include "Scene/ShapeFaceGroups.h"
+#include "Scene/ShapeTextureMapping.h"
 #include "Editor/EditorClipboard.h"
 #include "Project/Prefab.h"
+#include "Project/ProjectFile.h"
 #include <imgui_internal.h>
 #include <imgui_impl_opengl3.h>
 #include <fstream>
@@ -11,7 +14,82 @@
 using namespace Rice;
 static void Check(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
 static bool Near(Vector3 a,Vector3 b,float tolerance=1e-4f){return glm::length(a-b)<tolerance;}
+static void CornerNormalTests(){
+    auto mesh=ShapeMesh::FromPrimitive(BasicShape::Rectangle);
+    mesh.normals={{2,0,0},{0,3,0},{0,0,0},{1,0,0},{0,1,0},{0,0,1}};
+    auto expanded=mesh.RenderVertices();
+    auto normalAt=[&](size_t corner){const float* n=&expanded[corner*8+3];return Vector3(n[0],n[1],n[2]);};
+    Check(mesh.indices[0]==mesh.indices[5]&&Near(normalAt(0),{1,0,0})&&Near(normalAt(5),{0,0,1}),
+        "A shared position can have different normals at its two corners");
+    Check(Near(normalAt(1),{0,1,0})&&Near(normalAt(2),{0,0,1}),"Missing corners use the face normal beside authored directions");
+    auto edited=mesh;
+    ShapeEditorMath::Rotate(edited,mesh,0,2,90);
+    Check(Near(edited.normals[0],{0,2,0})&&edited.normals[2]==Vector3(0),"Rotating the geometry rotates authored normals and preserves missing corners");
+    edited=mesh;
+    ShapeEditorMath::Translate(edited,mesh,{mesh.indices[1]},{0,0,1});
+    Check(!Near(edited.normals[0],mesh.normals[0])&&edited.normals[5]==mesh.normals[5],"Moving a corner tilts the affected face's normals and preserves its neighbor");
+    ShapeEditorMath::Translate(edited,mesh,{mesh.indices[1]},Vector3(0));
+    Check(edited.normals==mesh.normals,"Dragging the corner back restores the original normals");
+    Check(ShapeFile::Decode(ShapeFile::Encode(mesh))==mesh,"Corner normals round-trip through an ungrouped shape");
+    mesh.faceGroups={{"Front",{0,1}}};
+    Check(ShapeFile::Decode(ShapeFile::Encode(mesh))==mesh,"Corner normals and authored groups round-trip together");
+
+    ComponentRegistry registry;EditorSession editor(registry);
+    auto& object=editor.scene->CreateGameObject("Normal seams");
+    auto& custom=object.AddComponent<MeshRenderer>().custom;custom=mesh;
+    auto restored=SceneCodec(registry).Decode(editor.Snapshot());
+    Check(restored->Find(object.GetID())->GetComponent<MeshRenderer>()->custom==mesh,"Scene storage preserves corner normals");
+    auto snapshot=editor.CaptureObject(object.GetID());custom.normals.clear();editor.Record(snapshot);editor.Undo();
+    Check(custom.normals==mesh.normals,"History detects changes to normals alone");
+
+    auto invalid=mesh;invalid.normals.pop_back();bool rejected=false;
+    try{invalid.Validate();}catch(const std::exception&){rejected=true;}
+    Check(rejected,"A partial corner normal buffer is rejected");
+    invalid=mesh;invalid.normals[0].x=std::numeric_limits<float>::infinity();rejected=false;
+    try{invalid.Validate();}catch(const std::exception&){rejected=true;}
+    Check(rejected,"Nonfinite stored normal directions are rejected");
+}
+static void TextureMappingTests(){
+    auto mesh=ShapeMesh::FromPrimitive(BasicShape::Cube);
+    // The second triangle uses the opposite winding, but shares the same plane.
+    std::swap(mesh.indices[4],mesh.indices[5]);
+    for(auto& position:mesh.positions)position.x*=1e-12f;
+    mesh.uv.assign(mesh.indices.size(),Vector2(3,4));
+    const auto group=ShapeFaceGroups::Build(mesh).groups.front();auto revision=mesh.revision;
+    Check(ApplyGroupTextureUVs(mesh,group,true)&&mesh.revision==revision+1,"Linked UV mapping invalidates the GPU mesh once");
+    std::map<uint32_t,Vector2> vertexUV;
+    Vector2 minUV(1),maxUV(0);
+    for(auto t:group.triangles)for(int c=0;c<3;++c){
+        size_t corner=3*t+c;auto uv=mesh.uv[corner];
+        auto [v,inserted]=vertexUV.emplace(mesh.indices[corner],uv);
+        Check(inserted||v->second==uv,"Both corners of a shared position sample the same image point");
+        minUV=glm::min(minUV,uv);maxUV=glm::max(maxUV,uv);
+    }
+    Check(minUV==Vector2(0)&&maxUV==Vector2(1),"The whole linked face spans one image even for a very thin quad");
+    Check(!ApplyGroupTextureUVs(mesh,group,true)&&mesh.revision==revision+1,"Reapplying identical UVs keeps the mesh revision");
+    Check(ApplyGroupTextureUVs(mesh,group,false)&&HasRepeatedTriangleUVs(mesh,group),"Unlinked triangles each receive the same three image corners");
+    Check(!ApplyGroupTextureUVs(mesh,group,false)&&mesh.revision==revision+2,"Repeated mapping also skips unchanged UVs");
+    for(size_t corner=6;corner<mesh.uv.size();++corner)Check(mesh.uv[corner]==Vector2(3,4),"Other face groups keep their UVs");
+    for(auto vertex:group.vertices)mesh.positions[vertex]={float(vertex),0,0};
+    ApplyGroupTextureUVs(mesh,group,true);
+    for(auto t:group.triangles)for(int c=0;c<3;++c){
+        auto uv=mesh.uv[t*3+c];Check(uv.x>=0&&uv.x<=1&&uv.y==.5f,"A collapsed line has finite, centered V coordinates");
+    }
+    for(auto vertex:group.vertices)mesh.positions[vertex]=Vector3(0);
+    ApplyGroupTextureUVs(mesh,group,true);
+    for(auto t:group.triangles)for(int c=0;c<3;++c)
+        Check(mesh.uv[3*t+c]==Vector2(.5f),"A collapsed point samples the center of the image");
+    auto folded=ShapeMesh::FromPrimitive(BasicShape::Cube);folded.faceGroups={{"Fold",{0,1,4,5}}};
+    auto acrossCrease=ShapeFaceGroups::Build(folded).groups.front();
+    ApplyGroupTextureUVs(folded,acrossCrease,true);
+    for(auto t:acrossCrease.triangles){
+        auto a=folded.uv[3*t],ab=folded.uv[3*t+1]-a,ac=folded.uv[3*t+2]-a;
+        Check(std::abs(ab.x*ac.y-ab.y*ac.x)>.01f,"Both sides of a folded authored group receive a two-dimensional projection");
+    }
+}
 static void DataTests(){
+    CornerNormalTests();
+    TextureMappingTests();
     ComponentRegistry registry;EditorSession editor(registry);
     auto& object=editor.scene->CreateGameObject("Custom test");auto id=object.GetID();
     auto& mesh=object.AddComponent<MeshRenderer>();mesh.SetShape(int(BasicShape::Custom));
@@ -29,13 +107,13 @@ static void DataTests(){
     selection.Click(2,false);selection.Click(5,true,true);Check(selection.selected.size()==4,"List shift click selects an ordered range");
     selection.Step(1,true);Check(selection.cursor==6&&selection.active==5&&selection.selected.size()==5,"Shift Down extends range without changing the last clicked pivot");
     selection.Step(-1,true);Check(selection.cursor==5&&selection.active==5&&selection.selected.size()==4,"Shift Up contracts range");
-    auto start=mesh.custom.positions;auto snapshot=editor.Snapshot();
-    ShapeEditorMath::Translate(mesh.custom,start,selection.selected,{2,0,0});editor.Record(snapshot);
+    auto startMesh=mesh.custom;const auto& start=startMesh.positions;auto snapshot=editor.Snapshot();
+    ShapeEditorMath::Translate(mesh.custom,startMesh,selection.selected,{2,0,0});editor.Record(snapshot);
     for(size_t i=0;i<start.size();++i)Check(Near(mesh.custom.positions[i],start[i]+(selection.selected.contains(static_cast<uint32_t>(i))?Vector3(2,0,0):Vector3(0))),"Translation moves only the selected vertices");
-    auto moved=mesh.custom.positions;editor.Undo();Check(editor.scene->Find(id)->GetComponent<MeshRenderer>()->custom.positions==start,"Mesh edit is undoable");
+    auto movedMesh=mesh.custom;const auto& moved=movedMesh.positions;editor.Undo();Check(editor.scene->Find(id)->GetComponent<MeshRenderer>()->custom.positions==start,"Mesh edit is undoable");
     editor.Redo();Check(editor.scene->Find(id)->GetComponent<MeshRenderer>()->custom.positions==moved,"Mesh edit is redoable");
     auto& current=*editor.scene->Find(id)->GetComponent<MeshRenderer>();
-    ShapeEditorMath::Rotate(current.custom,moved,0,2,90);
+    ShapeEditorMath::Rotate(current.custom,movedMesh,0,2,90);
     Check(Near(current.custom.positions[0],moved[0]),"Rotation pivot is the last active vertex");
     for(size_t i=0;i<moved.size();++i){auto relative=moved[i]-moved[0];Check(Near(current.custom.positions[i],moved[0]+Vector3(-relative.y,relative.x,relative.z)),"Rotation affects the entire shape around the pivot");}
     auto encoded=editor.Snapshot();auto restored=SceneCodec(registry).Decode(encoded);
@@ -57,6 +135,37 @@ static void DataTests(){
     Check(legacyObject.GetComponent<MeshRenderer>()->custom.Empty(),"Old prefab component payload remains compatible");
     bool rejected=false;try{ShapeMesh malformed;std::istringstream bad("1 3 0 0 0 0 1 0 0 0 0 0 0 0");malformed.Read(bad);}catch(...){rejected=true;}
     Check(rejected,"Out-of-range indices are rejected before rendering");
+
+    auto cube=ShapeMesh::FromPrimitive(BasicShape::Cube);
+    auto groups=ShapeFaceGroups::Build(cube);
+    Check(groups.groups.size()==6,"A legacy cube exposes six edge-connected planar faces");
+    for(const auto& group:groups.groups)Check(group.triangles.size()==2&&group.vertices.size()==4,"A quad group contains both triangles and four unique vertices");
+    auto islands=ShapeMesh::FromPrimitive(BasicShape::Rectangle);
+    islands.positions.insert(islands.positions.end(),{{2,0,0},{2,1,0}});
+    islands.indices.insert(islands.indices.end(),{0,4,5,0,0,4});
+    islands.uv.resize(islands.indices.size());
+    auto separate=ShapeFaceGroups::Build(islands);
+    Check(separate.triangleToGroup==std::vector<uint32_t>{0,0,1,2},"Planar islands sharing only a point and zero-area triangles stay separate");
+
+    // Authored groups can cross creases and contain nonconsecutive triangles.
+    cube.faceGroups={{"Corner\n\"A\"",{2,0}}};
+    groups=ShapeFaceGroups::Build(cube);
+    Check(groups.groups.front().name=="Corner \"A\"","Multiline group names fit one row in the triangle list");
+    Check(groups.groups.front().triangles==std::vector<uint32_t>{0,2}&&groups.triangleToGroup[0]==groups.triangleToGroup[2]&&
+        groups.triangleToGroup[0]!=groups.triangleToGroup[1],"Authored face groups take precedence and unassigned triangles are grouped separately");
+    Check(ShapeFile::Decode(ShapeFile::Encode(cube))==cube,"Named face groups round-trip through a shape asset");
+    auto& groupedObject=editor.scene->CreateGameObject("Authored groups");
+    auto& groupedMesh=groupedObject.AddComponent<MeshRenderer>().custom;groupedMesh=cube;
+    auto groupedScene=SceneCodec(registry).Decode(editor.Snapshot());
+    Check(groupedScene->Find(groupedObject.GetID())->GetComponent<MeshRenderer>()->custom==cube,"Face groups round-trip through scene properties");
+    auto beforeGroupChange=editor.CaptureObject(groupedObject.GetID());groupedMesh.faceGroups.clear();editor.Record(beforeGroupChange);
+    editor.Undo();Check(groupedMesh.faceGroups==cube.faceGroups,"History restores a change affecting only face groups");
+    for(auto invalidTriangle:{0u,12u}){
+        auto invalid=cube;invalid.faceGroups.push_back({"Other",{invalidTriangle}});
+        std::ostringstream output;invalid.Write(output);std::istringstream input(output.str());
+        rejected=false;try{groupedMesh.Read(input);}catch(const std::exception&){rejected=true;}
+        Check(rejected&&groupedMesh==cube,"An overlapping or out-of-range group is rejected without changing the mesh");
+    }
 }
 static void GeometryTests(){
     auto mesh=ShapeMesh::FromPrimitive(BasicShape::Cube);ShapeSelection selection;selection.Reset(mesh);MeshIntersection spatial;spatial.Rebuild(mesh);
@@ -239,26 +348,139 @@ struct Fixture {
         std::ofstream out(path,std::ios::binary);out.write(reinterpret_cast<char*>(header.data()),header.size());out.write(reinterpret_cast<char*>(pixels.data()),pixels.size());
     }
 };
+static void ChessLightingPreviewTests(const fs::path& screenshot){
+    const auto projectPath=fs::path(__FILE__).parent_path().parent_path().parent_path()/"Projects/Chess/Chess.rice";
+    std::ifstream input(projectPath,std::ios::binary);int version=0;
+    auto project=ProjectFile::Read(input,version);
+    Fixture f;f.panel.Close(f.editor);
+    f.editor.Replace(SceneCodec(f.registry).Decode(project.scenes.at(project.activeScene)));
+    const auto& objects=f.editor.scene->GetObjects();
+    auto pawn=std::find_if(objects.begin(),objects.end(),[](const auto& object){return object->name=="pawn1";});
+    Check(pawn!=objects.end(),"Chess project contains pawn1");
+    f.id=(*pawn)->GetID();f.panel.Open(f.editor,f.id,projectPath.parent_path()/"Assets");f.Frame();f.Frame();
+    auto& mesh=f.Mesh().custom;
+    Check(!mesh.normals.empty()&&mesh.normals.size()==mesh.indices.size(),"Chess pawn has stored shading normals for each corner");
+    Check(!f.panel.LightingPreview(),"The Shape Editor opens with lighting preview unchecked");
+    Check(f.panel.ShowMarkers(),"The Shape Editor opens with vertex and triangle markers visible");
+
+    using Pixel=std::array<unsigned char,4>;
+    auto readCanvas=[&]{
+        auto origin=f.panel.CanvasOrigin(),size=f.panel.CanvasSize();
+        int width=static_cast<int>(size.x),height=static_cast<int>(size.y);
+        std::vector<Pixel> pixels(size_t(width)*height);
+        glReadPixels(int(origin.x),int(ImGui::GetIO().DisplaySize.y-origin.y)-height,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+        return pixels;
+    };
+    const auto unlit=readCanvas();
+    if(!screenshot.empty())f.Screenshot(screenshot.parent_path()/"Chess-shape-unlit.bmp");
+    auto* window=ImGui::FindWindowByName("Shape Editor");auto bar=window->MenuBarRect();
+    const auto& style=ImGui::GetStyle();
+    const float barEnd=window->Pos.x+window->DC.MenuBarOffset.x-style.ItemSpacing.x;
+    const float markerLabelWidth=ImGui::CalcTextSize("Show markers").x;
+    const float markerWidth=ImGui::GetFrameHeight()+style.ItemInnerSpacing.x+markerLabelWidth;
+    const ImVec2 markersCheckbox{barEnd-markerLabelWidth*.5f,bar.GetCenter().y};
+    const ImVec2 lightingCheckbox{barEnd-markerWidth-style.ItemSpacing.x-ImGui::CalcTextSize("Lighting preview").x*.5f,bar.GetCenter().y};
+    f.Click(lightingCheckbox);f.Frame();
+    Check(f.panel.LightingPreview(),"Clicking Lighting preview in the top bar enables shaded rendering");
+    const auto lit=readCanvas();
+    if(!screenshot.empty())f.Screenshot(screenshot.parent_path()/"Chess-shape-lit.bmp");
+
+    // Measure the pawn's solid-color pixels and exclude the background and editing overlays.
+    Color color=f.Mesh().color;
+    std::set<unsigned char> lightLevels;size_t surfacePixels=0;
+    auto onSurface=[&](const Pixel& pixel){
+        for(int channel=0;channel<3;++channel)if(std::abs(int(pixel[channel])-int(std::lround(color[channel]*255)))>1)return false;
+        return true;
+    };
+    for(size_t i=0;i<unlit.size();++i)if(onSurface(unlit[i])){++surfacePixels;lightLevels.insert(lit[i][0]);}
+    Check(surfacePixels>2000&&lightLevels.size()>32,"Lighting preview produces a broad tonal gradient across the Chess pawn");
+    f.Click(markersCheckbox);f.Frame();
+    Check(!f.panel.ShowMarkers()&&f.panel.LightingPreview(),"Show markers hides the editing overlays while keeping scene lighting enabled");
+    const auto cleanLit=readCanvas();
+    if(!screenshot.empty())f.Screenshot(screenshot.parent_path()/"Chess-shape-lit-no-markers.bmp");
+    f.Click(lightingCheckbox);f.Frame();
+    Check(!f.panel.ShowMarkers()&&!f.panel.LightingPreview(),"Switching lighting off preserves the marker setting");
+    const auto cleanUnlit=readCanvas();
+    auto white=[](const Pixel& pixel){return pixel[0]==255&&pixel[1]==255&&pixel[2]==255;};
+    Check(std::none_of(cleanUnlit.begin(),cleanUnlit.end(),white),"Hiding the editing overlays removes all white marker pixels from the unlit pawn canvas");
+    size_t removedMarkerPixels=0,preservedSurfacePixels=0;
+    for(size_t i=0;i<lit.size();++i){
+        if(white(unlit[i])&&lit[i]!=cleanLit[i])++removedMarkerPixels;
+        if(onSurface(unlit[i])&&lit[i]==cleanLit[i])++preservedSurfacePixels;
+    }
+    Check(removedMarkerPixels>100&&preservedSurfacePixels>surfacePixels*95/100,"Hiding the markers reveals the pawn while preserving its exposed shaded surface");
+    f.Click(lightingCheckbox);f.Frame();
+    Check(f.panel.LightingPreview()&&!f.panel.ShowMarkers()&&readCanvas()==cleanLit,"Re-enabling lighting restores the shaded pawn with its markers still hidden");
+    f.Click(markersCheckbox);f.Frame();
+    Check(f.panel.LightingPreview()&&f.panel.ShowMarkers()&&readCanvas()==lit,"Re-enabling markers restores the original shaded canvas pixel for pixel");
+    auto& lightIntensity=f.editor.scene->settings.lightIntensity;
+    const float savedIntensity=lightIntensity;lightIntensity=0;f.Frame();
+    const auto dimmed=readCanvas();
+    size_t lightAffected=0;
+    for(size_t i=0;i<unlit.size();++i)if(onSurface(unlit[i])&&int(lit[i][0])>int(dimmed[i][0])+2)++lightAffected;
+    Check(lightAffected>surfacePixels/10,"The preview responds to the Chess scene's directional light");
+    lightIntensity=savedIntensity;
+    auto normals=std::move(mesh.normals);mesh.normals.clear();mesh.Touch();f.Frame();
+    const auto faceted=readCanvas();size_t changed=0;
+    for(size_t i=0;i<unlit.size();++i)if(onSurface(unlit[i])&&std::abs(int(lit[i][0])-int(faceted[i][0]))>2)++changed;
+    Check(changed>surfacePixels/10,"The lighting preview uses the pawn's authored corner normals");
+    mesh.normals=std::move(normals);mesh.Touch();
+    f.Click(lightingCheckbox);f.Frame();
+    Check(!f.panel.LightingPreview()&&readCanvas()==unlit,"Disabling lighting restores the original unlit canvas");
+    Check(!f.panel.HasUnsavedChanges(),"Toggling preview lighting and markers leaves the editing copy clean");
+}
+static void WriteTestTexture(const fs::path& path){
+    std::string bitmap(70,'\0');bitmap[0]='B';bitmap[1]='M';auto put=[&](int at,uint32_t value){for(int i=0;i<4;++i)bitmap[at+i]=static_cast<char>(value>>(i*8));};put(2,70);put(10,54);put(14,40);put(18,2);put(22,2);bitmap[26]=1;bitmap[28]=32;
+    for(size_t i=54;i<bitmap.size();i+=4){bitmap[i]=30;bitmap[i+1]=100;bitmap[i+2]=static_cast<char>(240);bitmap[i+3]=static_cast<char>(255);}AtomicWrite(path,bitmap);
+}
 static void TriangleUITests(const fs::path& directory,const fs::path& screenshot){
-    auto assetRoot=directory/fs::path(u8"한글 텍스처")/NewAssetID();std::string bitmap(70,'\0');bitmap[0]='B';bitmap[1]='M';auto put=[&](int at,uint32_t value){for(int i=0;i<4;++i)bitmap[at+i]=static_cast<char>(value>>(i*8));};put(2,70);put(10,54);put(14,40);put(18,2);put(22,2);bitmap[26]=1;bitmap[28]=32;
-    for(size_t i=54;i<bitmap.size();i+=4){bitmap[i]=30;bitmap[i+1]=100;bitmap[i+2]=static_cast<char>(240);bitmap[i+3]=static_cast<char>(255);}AtomicWrite(assetRoot/"face.bmp",bitmap);AssetDatabase assets(assetRoot);
-    Fixture f(assetRoot);f.assets=&assets;auto markers=f.Markers();Check(!markers.empty(),"Triangle markers appear in the editor canvas");auto marker=markers.front();auto center=(marker.points[0]+marker.points[1]+marker.points[2])/3.f;
+    auto assetRoot=directory/fs::path(u8"한글 텍스처")/NewAssetID();WriteTestTexture(assetRoot/"face.bmp");AssetDatabase assets(assetRoot);
+    Fixture f(assetRoot);f.assets=&assets;
+    auto toolbar=ImGui::FindWindowByName("Shape Editor")->DC.CursorStartPos;
+    for(auto button:{"Save","Load","General"})toolbar.x+=ImGui::CalcTextSize(button).x+2*ImGui::GetStyle().FramePadding.x+ImGui::GetStyle().ItemSpacing.x;
+    ImVec2 trianglesButton(toolbar.x+20,toolbar.y+ImGui::GetFrameHeight()*.5f);
+    f.Click(trianglesButton);f.Frame();
+    Check(f.panel.TrianglePanelOpen()&&f.panel.Selection().triangle==-1,"The toolbar opens the group browser before any triangle is selected");
+    f.Click(trianglesButton);f.Frame();
+    auto markers=f.Markers();Check(!markers.empty(),"Triangle markers appear in the editor canvas");auto marker=markers.front();auto center=(marker.points[0]+marker.points[1]+marker.points[2])/3.f;
     auto countWhite=[&](){auto large=ShapeEditorMath::ScaleMarker(marker,1.3f);Vector2 lo=large.points[0],hi=lo;for(auto p:large.points){lo=glm::min(lo,p);hi=glm::max(hi,p);}int x=int(lo.x)-2,y=750-int(hi.y)-3,width=int(hi.x-lo.x)+6,height=int(hi.y-lo.y)+6;std::vector<unsigned char> pixels(width*height*4);glReadPixels(x,y,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());int count=0;for(size_t i=0;i<pixels.size();i+=4)if(pixels[i]>245&&pixels[i+1]>245&&pixels[i+2]>245)++count;return count;};
     f.Frame();int normal=countWhite();f.Frame(Fixture::Point(center));int hover=countWhite();f.Frame();Check(normal>20&&hover>normal*1.25&&hover<normal*1.65&&countWhite()==normal,"Rendered white triangles enlarge on hover and return when the pointer leaves");
     f.Click(Fixture::Point(center));f.Frame();Check(f.panel.Selection().triangle==marker.triangle&&f.panel.Selection().selected.size()==3&&f.panel.TrianglePanelOpen()&&f.panel.VertexListOpen(),"Clicking a triangle selects its vertices and opens material and vertex panels");
     for(int c=0;c<3;++c)Check(f.panel.Selection().selected.contains(f.Mesh().custom.indices[marker.triangle*3+c]),"Selection contains exactly the clicked triangle vertices");
     Check(!f.Mesh().triangleMaterials.Edited(),"Selecting a triangle alone does not create an override");
     ImGuiWindow* panel=nullptr;for(auto* window:ImGui::GetCurrentContext()->Windows)if(window->Active&&std::strstr(window->Name,"/Triangle panel_")){panel=window;break;}Check(panel!=nullptr,"Triangle property panel exists");
-    auto start=panel->DC.CursorStartPos;auto& style=ImGui::GetStyle();float row=ImGui::GetFrameHeightWithSpacing(),separator=ImGui::GetTextLineHeight()+2*style.SeparatorTextPadding.y+style.ItemSpacing.y;
-    f.Click({start.x+80,start.y+row+separator+row+ImGui::GetFrameHeight()*.5f});f.Frame();
-    Check(f.Mesh().triangleMaterials.faces.size()==1&&f.Mesh().triangleMaterials.faces.contains(marker.triangle),"Material sliders change only the selected triangle");
+    ImGuiWindow* tree=nullptr;for(auto* window:ImGui::GetCurrentContext()->Windows)if(window->Active&&std::strstr(window->Name,"/Face groups_"))tree=window;
+    Check(tree!=nullptr,"Triangle panel contains a group tree");
+    int group=f.panel.Selection().group;
+    auto members=f.panel.Selection().faceGroups.groups[group];
+    Check(members.triangles.size()==2&&members.vertices.size()==4,"Cube face groups contain both triangles and all four corners");
+    for(auto vertex:members.vertices)Check(f.panel.Selection().GroupVertex(vertex),"Clicking one triangle highlights every corner on its face");
+    ImGui::SetScrollY(tree,0);f.Frame();
+    auto treeRow=[&](int index,float x){
+        return ImVec2(tree->DC.CursorStartPos.x+x,tree->DC.CursorStartPos.y+index*ImGui::GetTextLineHeightWithSpacing()+ImGui::GetTextLineHeight()*.5f);
+    };
+    f.Click(treeRow(group,45));f.Frame();
+    Check(f.panel.Selection().triangle==-1&&f.panel.Selection().selected==std::set<uint32_t>(members.vertices.begin(),members.vertices.end()),"Clicking the group header selects all four vertices");
+    float expandedHeight=tree->ContentSize.y;
+    f.Click(treeRow(group,5));f.Frame();
+    Check(tree->ContentSize.y<expandedHeight&&f.panel.Selection().selected.size()==4,"The disclosure arrow collapses both child triangles and preserves group selection");
+    f.Click(treeRow(group,5));f.Frame();
+    Check(tree->ContentSize.y==expandedHeight,"The disclosure arrow restores all triangle rows");
+    int editTriangle=static_cast<int>(members.triangles.front()==uint32_t(marker.triangle)?members.triangles.back():members.triangles.front());
+    int childRow=group+1+(members.triangles.front()!=uint32_t(editTriangle));
+    f.Click(treeRow(childRow,55));f.Frame();
+    Check(f.panel.Selection().triangle==editTriangle&&f.panel.Selection().selected.size()==3,"Clicking a sibling row sets the triangle to edit");
+    auto& style=ImGui::GetStyle();float row=ImGui::GetFrameHeightWithSpacing(),separator=ImGui::GetTextLineHeight()+2*style.SeparatorTextPadding.y+style.ItemSpacing.y;
+    auto field=[&](int index){return ImVec2(panel->DC.CursorStartPos.x+80,tree->Pos.y+tree->Size.y+style.ItemSpacing.y+separator+index*row+ImGui::GetFrameHeight()*.5f);};
+    f.Click(field(1));f.Frame();
+    Check(f.Mesh().triangleMaterials.faces.size()==1&&f.Mesh().triangleMaterials.faces.contains(editTriangle),"Material sliders change only the selected triangle");
     Check(!HasTriangleMaterials(*f.editor.scene->Find(f.id)),"Triangle edits stay in the draft until saved in scene");
-    auto value=f.Mesh().triangleMaterials.faces.at(marker.triangle);f.Key(ImGuiKey_Z);Check(!f.Mesh().triangleMaterials.Edited(),"Triangle material editing is undoable");f.Key(ImGuiKey_Y);Check(f.Mesh().triangleMaterials.faces.at(marker.triangle)==value,"Triangle material editing supports redo");
-    f.Click({start.x+80,start.y+row+separator+row*3+ImGui::GetFrameHeight()*.5f});f.Frame();
+    auto value=f.Mesh().triangleMaterials.faces.at(editTriangle);f.Key(ImGuiKey_Z);Check(!f.Mesh().triangleMaterials.Edited(),"Triangle material editing is undoable");f.Key(ImGuiKey_Y);Check(f.Mesh().triangleMaterials.faces.at(editTriangle)==value,"Triangle material editing supports redo");
+    f.Click(field(3));f.Frame();
     auto& popups=ImGui::GetCurrentContext()->OpenPopupStack;Check(!popups.empty()&&popups.back().Window,"Triangle texture picker opens");auto option=popups.back().Window->DC.CursorStartPos;
     f.Click({option.x+35,option.y+ImGui::GetTextLineHeight()*.5f+ImGui::GetTextLineHeightWithSpacing()});f.Frame();
-    Check(f.Mesh().triangleMaterials.faces.at(marker.triangle).albedoAsset==assets.Entries().front().id&&f.Mesh().triangleMaterials.faces.at(marker.triangle).albedoTexture,"Choosing a texture loads the selected asset for this triangle");
-    f.Key(ImGuiKey_Z);Check(f.Mesh().triangleMaterials.faces.at(marker.triangle).albedoAsset.empty(),"Texture selection is undoable without changing the material sliders");f.Key(ImGuiKey_Y);Check(f.Mesh().triangleMaterials.faces.at(marker.triangle).albedoTexture!=nullptr,"Redo reloads the per-triangle texture");
+    Check(f.Mesh().triangleMaterials.faces.at(editTriangle).albedoAsset==assets.Entries().front().id&&f.Mesh().triangleMaterials.faces.at(editTriangle).albedoTexture,"Choosing a texture loads the selected asset for this triangle");
+    f.Key(ImGuiKey_Z);Check(f.Mesh().triangleMaterials.faces.at(editTriangle).albedoAsset.empty(),"Texture selection is undoable without changing the material sliders");f.Key(ImGuiKey_Y);Check(f.Mesh().triangleMaterials.faces.at(editTriangle).albedoTexture!=nullptr,"Redo reloads the per-triangle texture");
     f.Frame();f.Screenshot(screenshot.empty()?fs::path{}:screenshot.parent_path()/"ShapeEditor-triangles.bmp");
     f.panel.SaveFile(f.editor,directory/"face-geometry.riceshape");Check(f.panel.IsDirty(f.editor)&&!HasTriangleMaterials(*f.editor.scene->Find(f.id)),"Asset-only save does not apply object-specific material edits");
     f.panel.SaveInScene(f.editor,&assets);Check(HasTriangleMaterials(*f.editor.scene->Find(f.id))&&!f.panel.IsDirty(f.editor),"In scene save applies per-triangle materials to the object");
@@ -276,6 +498,159 @@ static void TriangleUITests(const fs::path& directory,const fs::path& screenshot
     f.Click({overlay->DC.CursorStartPos.x+20,y});f.Frame();
     Check(!HasTriangleMaterials(*object)&&!object->GetComponent<Material>()->enabled&&!f.Mesh().triangleMaterials.Edited(),"Proceed applies the pending value uniformly and clears the scene and open draft overrides");
     f.editor.Undo();Check(HasTriangleMaterials(*f.editor.scene->Find(f.id)),"Inspector Proceed is undoable");
+}
+static void GroupMaterialUITests(const fs::path& directory){
+    auto assetRoot=directory/NewAssetID();
+    WriteTestTexture(assetRoot/"first.bmp");WriteTestTexture(assetRoot/"second.bmp");
+    AssetDatabase assets(assetRoot);
+    auto oldTexture=assets.Entries()[0].id,newTexture=assets.Entries()[1].id;
+    Fixture f(assetRoot);f.assets=&assets;
+    const auto& groups=f.panel.Selection().faceGroups.groups;
+    uint32_t first=groups[0].triangles[0],second=groups[0].triangles[1],outside=groups[1].triangles[0];
+    auto& source=*f.editor.scene->Find(f.id)->GetComponent<MeshRenderer>();
+    SurfaceMaterial a,b,other;
+    a.metallicity=.1f;a.roughness=.15f;a.albedoAsset=oldTexture;
+    b.enabled=false;b.metallicity=.9f;b.roughness=.85f;
+    other.metallicity=.6f;other.roughness=.35f;other.albedoAsset=newTexture;
+    source.triangleMaterials.faces={{first,a},{second,b},{outside,other}};
+    const auto original=source.triangleMaterials.faces;
+    const auto originalUV=source.custom.uv;
+    f.panel.Open(f.editor,f.id,assetRoot);f.Frame();f.Frame();
+    auto toolbar=ImGui::FindWindowByName("Shape Editor")->DC.CursorStartPos;
+    for(auto button:{"Save","Load","General"})toolbar.x+=ImGui::CalcTextSize(button).x+2*ImGui::GetStyle().FramePadding.x+ImGui::GetStyle().ItemSpacing.x;
+    f.Click({toolbar.x+20,toolbar.y+ImGui::GetFrameHeight()*.5f});f.Frame();
+    auto child=[](const char* name){
+        for(auto* window:ImGui::GetCurrentContext()->Windows)if(window->Active&&std::strstr(window->Name,name))return window;
+        throw std::runtime_error(std::string("Missing group material test window ")+name);
+    };
+    auto tree=child("/Face groups_"),panel=child("/Triangle panel_");
+    auto clickRow=[&](int index,float x){
+        f.Click({tree->DC.CursorStartPos.x+x,tree->DC.CursorStartPos.y+index*ImGui::GetTextLineHeightWithSpacing()+ImGui::GetTextLineHeight()*.5f});f.Frame();
+    };
+    auto clickField=[&](int index,float x=80.f){
+        const auto& style=ImGui::GetStyle();
+        float fieldsTop=tree->Pos.y+tree->Size.y+style.ItemSpacing.y+ImGui::GetTextLineHeight()+2*style.SeparatorTextPadding.y+style.ItemSpacing.y;
+        f.Click({panel->DC.CursorStartPos.x+x,fieldsTop+index*ImGui::GetFrameHeightWithSpacing()+ImGui::GetFrameHeight()*.5f});f.Frame();
+    };
+    auto choose=[&](int field,int option){
+        clickField(field);
+        auto& popups=ImGui::GetCurrentContext()->OpenPopupStack;
+        Check(!popups.empty()&&popups.back().Window,"Group material dropdown opens");
+        auto start=popups.back().Window->DC.CursorStartPos;
+        f.Click({start.x+25,start.y+ImGui::GetTextLineHeight()*.5f+option*ImGui::GetTextLineHeightWithSpacing()});f.Frame();
+    };
+    auto values=[&]()->const auto& {return f.Mesh().triangleMaterials.faces;};
+    clickRow(0,45);
+    Check(f.panel.Selection().group==0&&f.panel.Selection().triangle<0&&values()==original,"Selecting a group preserves its mixed materials");
+    clickField(0,8);
+    auto expected=original;
+    expected[first].enabled=expected[second].enabled=values().at(first).enabled;
+    Check(values()==expected&&expected!=original,"Group Enabled changes only that property across member triangles");
+    f.Key(ImGuiKey_Z);Check(values()==original,"Group Enabled is a single undo step");
+    clickField(2);
+    expected=original;
+    expected[first].roughness=expected[second].roughness=values().at(first).roughness;
+    Check(values()==expected&&expected!=original,"Group Roughness preserves texture, metallicity and enabled differences");
+    f.Key(ImGuiKey_Z);
+    clickField(1);
+    expected=original;
+    expected[first].metallicity=expected[second].metallicity=values().at(first).metallicity;
+    Check(values()==expected&&expected!=original,"Group Metalicity preserves the other heterogeneous settings");
+    f.Key(ImGuiKey_Z);Check(values()==original,"Group slider restores distinct values with one undo");
+    f.Key(ImGuiKey_Y);Check(values()==expected,"Group slider supports redo");
+
+    auto checkLinkedUV=[&](){
+        std::map<uint32_t,Vector2> uvByVertex;
+        std::set<std::pair<float,float>> corners;
+        for(auto index:{first,second})for(int i=0;i<3;++i){
+            auto corner=index*3+i;
+            auto uv=f.Mesh().custom.uv[corner];
+            auto [entry,added]=uvByVertex.emplace(f.Mesh().custom.indices[corner],uv);
+            Check(added||entry->second==uv,"Linked UVs agree across the internal edge");
+            corners.emplace(uv.x,uv.y);
+        }
+        Check(corners==std::set<std::pair<float,float>>{{0,0},{1,0},{1,1},{0,1}},"The linked group spans all four texture corners");
+    };
+    auto repeatedUV=originalUV;
+    for(auto index:{first,second}){
+        repeatedUV[index*3]={0,0};repeatedUV[index*3+1]={1,0};repeatedUV[index*3+2]={0,1};
+    }
+    const auto beforeTexture=expected;
+    choose(4,2); // Select the second texture after None.
+    expected[first].albedoAsset=expected[second].albedoAsset=newTexture;
+    Check(values()==expected&&values().at(first).albedoTexture==values().at(second).albedoTexture&&values().at(first).albedoTexture,"Assigning a linked texture applies one asset to the whole group");
+    checkLinkedUV();
+    const auto linkedUV=f.Mesh().custom.uv;
+    f.Key(ImGuiKey_Z);Check(values()==beforeTexture&&f.Mesh().custom.uv==originalUV,"One undo restores all textures and UVs before group assignment");
+    f.Key(ImGuiKey_Y);Check(values()==expected&&f.Mesh().custom.uv==linkedUV,"Redo restores the group's linked assignment");
+    auto linkedBuffer=f.Mesh().customArray;
+    clickField(3,8);
+    Check(values()==expected&&f.Mesh().custom.uv==repeatedUV&&f.Mesh().customArray!=linkedBuffer,"Unlink immediately redraws every group triangle with an independent texture mapping");
+    f.Key(ImGuiKey_Z);Check(f.Mesh().custom.uv==linkedUV,"Undo restores continuous group UVs");
+    f.Key(ImGuiKey_Y);Check(f.Mesh().custom.uv==repeatedUV,"Redo restores per-triangle UVs");
+    choose(4,1);
+    expected[first].albedoAsset=expected[second].albedoAsset=oldTexture;
+    Check(values()==expected&&f.Mesh().custom.uv==repeatedUV,"An unlinked group assignment repeats the same asset independently across all members");
+    clickField(3,8);checkLinkedUV();
+    Check(values()==expected,"Relinking changes UVs while preserving material properties");
+    f.Key(ImGuiKey_Z);
+    Check(f.Mesh().custom.uv==repeatedUV,"Undoing the relink preserves the preceding texture choice");
+    Check(f.panel.Selection().group==0&&f.panel.Selection().triangle<0&&tree->Active,"Group remains selected in its visible tree after material edits");
+
+    clickRow(0,5);clickRow(2,55);
+    Check(f.panel.Selection().triangle==int(second),"A child row sets the individual material target");
+    clickField(2);
+    expected[second].roughness=values().at(second).roughness;
+    Check(values()==expected&&expected[second].roughness!=b.roughness,"A child roughness edit changes only that triangle");
+    choose(3,0);
+    expected[second].albedoAsset.clear();
+    Check(values()==expected&&source.triangleMaterials.faces==original&&f.Mesh().custom.uv==repeatedUV,"Individual triangle texture edits preserve the sibling and the group's UV mapping");
+    auto asset=f.panel.SaveInScene(f.editor,&assets);
+    auto saved=ShapeFile::LoadDocument(asset);
+    Check(source.triangleMaterials.faces==expected&&source.custom.uv==repeatedUV&&saved.mesh.uv==repeatedUV&&!saved.triangleMaterials.Edited(),"Scene save commits materials to the object and stores edited UVs in the shape asset");
+    f.editor.Undo();
+    Check(f.editor.scene->Find(f.id)->GetComponent<MeshRenderer>()->triangleMaterials.faces==original,"Scene undo restores all prior face materials");
+}
+static void ShapeViewportTests(){
+    Fixture f;
+    ImGui::SetWindowSize("Shape Editor",{470,650});
+    auto& source=*f.editor.scene->Find(f.id)->GetComponent<MeshRenderer>();
+    source.color={.25f,.5f,.75f,1.f};
+    for(float scale:{.00001f,5000.f}){
+        auto& mesh=source.custom;
+        mesh=ShapeMesh::FromPrimitive(BasicShape::Cube);
+        for(auto& vertex:mesh.positions)vertex*=scale;
+        mesh.Touch();
+        f.panel.Open(f.editor,f.id);f.Frame();f.Frame();
+        auto size=f.panel.CanvasSize();
+        auto center=f.panel.CanvasOrigin()+size*.5f;
+        auto projectedExtent=[&](){
+            Vector2 extent(0);
+            for(int row=0;row<8;++row)
+                extent=glm::max(extent,glm::abs(f.Project(row)-center)/(size*.5f));
+            return std::max(extent.x,extent.y);
+        };
+        float framed=projectedExtent();
+        Check(framed>.75f&&framed<.85f,"Framing fills the actual canvas across mesh sizes");
+        Check(f.Markers().size()==6,"All three front faces expose markers at the framing distance");
+        f.Frame(Fixture::Point(center));
+        ImGui::GetIO().AddMouseWheelEvent(0,1);f.Frame(Fixture::Point(center));
+        Check(projectedExtent()>framed,"Wheel zoom enlarges the shape");
+        ImGui::GetIO().AddMouseWheelEvent(0,60);f.Frame(Fixture::Point(center));
+        Check(std::isfinite(projectedExtent()),"A high wheel delta keeps every vertex in front of the near plane");
+        constexpr int side=48;
+        std::array<unsigned char,side*side*4> pixels{};
+        glReadPixels(int(center.x)-side/2,750-int(center.y)-side/2,side,side,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+        int facePixels=0;
+        for(size_t i=0;i<pixels.size();i+=4)
+            if(std::abs(pixels[i]-64)<=1&&std::abs(pixels[i+1]-128)<=1&&std::abs(pixels[i+2]-191)<=1)++facePixels;
+        Check(facePixels>side*side/2,"The zoomed shape is visible in the rendered canvas");
+        auto closest=f.panel.Camera().position;
+        ImGui::GetIO().AddMouseWheelEvent(0,1);f.Frame(Fixture::Point(center));
+        Check(glm::length(f.panel.Camera().position-closest)<scale*.0001f,"Repeated zoom-in stops ahead of the mesh");
+        ImGui::GetIO().AddMouseWheelEvent(0,-2);f.Frame(Fixture::Point(center));
+        Check(glm::length(f.panel.Camera().position)>glm::length(closest),"The wheel can zoom back out from the closest view");
+    }
 }
 static void InteractionTests(const fs::path& screenshot){
     Fixture f;Check(f.panel.CanvasSize().x>200&&f.panel.CanvasSize().y>200,"Shape Editor provides a usable viewport");
@@ -444,13 +819,45 @@ public:
     uint32_t GetWidth()const override{return 1;}uint32_t GetHeight()const override{return 1;}
     void Bind(uint32_t slot)const override{glActiveTexture(GL_TEXTURE0+slot);glBindTexture(GL_TEXTURE_2D,texture);}
 };
+static void NormalRenderTests(){
+    Scene scene;auto& object=scene.CreateGameObject("Shaded triangle");
+    auto& mesh=object.AddComponent<MeshRenderer>();mesh.shape=int(BasicShape::Custom);mesh.color=Color(1);
+    mesh.custom.positions={{-.5f,-.5f,0},{.5f,-.5f,0},{0,.5f,0}};
+    mesh.custom.indices={0,1,2};mesh.custom.uv.resize(3);
+    auto& light=scene.CreateGameObject("Side light").AddComponent<Light>();
+    light.type=1;light.direction={-1,0,0};light.intensity=.7f;light.castsShadow=false;
+    PerspectiveCamera camera(45,1,.1f,100);camera.SetPosition({0,0,2});camera.LookAtObj({0,0,0});
+    SceneRenderer renderer;ViewportTarget target;
+    auto sample=[&](){
+        std::array<int,3> brightness{};
+        target.Render(256,256,[&]{
+            renderer.Render(scene,camera);
+            for(int i=0;i<3;++i){
+                auto clip=camera.GetVPMatrix()*Vector4((i-1)*.25f,-.25f,0,1);
+                std::array<unsigned char,4> pixel{};
+                glReadPixels(int((1+clip.x/clip.w)*128),int((1+clip.y/clip.w)*128),1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel.data());
+                brightness[i]=pixel[0];
+            }
+        });return brightness;
+    };
+    auto flat=sample();
+    Check(flat[0]==flat[1]&&flat[1]==flat[2],"A triangle without authored normals has constant shading under a directional light");
+    mesh.custom.normals={{0,0,1},{1,0,0},{0,0,1}};mesh.custom.Touch();
+    auto smooth=sample();
+    Check(smooth[0]+15<smooth[1]&&smooth[1]+15<smooth[2],"Scene lighting interpolates corner normals across the interior of one triangle");
+}
 static void TriangleRenderTests(){
+    NormalRenderTests();
     Scene scene;auto& object=scene.CreateGameObject("Two face colors");auto& mesh=object.AddComponent<MeshRenderer>();mesh.SetShape(int(BasicShape::Custom));mesh.custom=ShapeMesh::FromPrimitive(BasicShape::Rectangle);mesh.color=Color(1);
     SurfaceMaterial red,blue;red.albedoAsset="red";blue.albedoAsset="blue";red.albedoTexture=CreateRef<SolidTexture>(std::array<unsigned char,4>{255,0,0,255});blue.albedoTexture=CreateRef<SolidTexture>(std::array<unsigned char,4>{0,0,255,255});mesh.triangleMaterials.faces[0]=red;mesh.triangleMaterials.faces[1]=blue;
     PerspectiveCamera camera(45,1,.1f,100);camera.SetPosition({0,0,2});camera.LookAtObj({0,0,0});SceneRenderer renderer;ViewportTarget target;
-    auto sample=[&](bool editor,int triangle){std::array<unsigned char,4> result{};Vector3 center(0);for(int c=0;c<3;++c)center+=mesh.custom.positions[mesh.custom.indices[triangle*3+c]]/3.f;auto projected=camera.GetVPMatrix()*Vector4(center,1);int x=int((projected.x/projected.w+1)*128),y=int((projected.y/projected.w+1)*128);
-        target.Render(256,256,[&]{if(editor)renderer.RenderShape(mesh,camera);else renderer.Render(scene,camera);glReadPixels(x,y,1,1,GL_RGBA,GL_UNSIGNED_BYTE,result.data());});return result;};
+    auto sample=[&](bool editor,int triangle,std::span<const uint32_t> highlight={}){std::array<unsigned char,4> result{};Vector3 center(0);for(int c=0;c<3;++c)center+=mesh.custom.positions[mesh.custom.indices[triangle*3+c]]/3.f;auto projected=camera.GetVPMatrix()*Vector4(center,1);int x=int((projected.x/projected.w+1)*128),y=int((projected.y/projected.w+1)*128);
+        target.Render(256,256,[&]{if(editor)renderer.RenderShape(mesh,camera,nullptr,Vector3(0),highlight);else renderer.Render(scene,camera);glReadPixels(x,y,1,1,GL_RGBA,GL_UNSIGNED_BYTE,result.data());});return result;};
     auto a=sample(true,0),b=sample(true,1);Check(a[0]>250&&a[2]<2&&b[0]<2&&b[2]>250,"Each triangle uses its own texture in the unlit shape editor");
+    const std::array<uint32_t,2> both{0,1};const std::array<uint32_t,1> second{1};
+    auto pinkRed=sample(true,0,both),pinkBlue=sample(true,1,both);
+    Check(pinkRed[0]>240&&pinkRed[2]>135&&pinkRed[1]>120&&pinkBlue[0]>175&&pinkBlue[1]>120,"Group tint covers each member across material boundaries");
+    Check(sample(true,0,second)==a&&sample(true,1,second)==pinkBlue,"Faces outside the group retain their material color");
     a=sample(false,0);b=sample(false,1);Check(a[0]>35&&a[2]<2&&b[0]<2&&b[2]>35,"Scene and game rendering retain per-triangle textures");
     auto& light=scene.CreateGameObject("Triangle light").AddComponent<Light>();light.type=1;light.direction={0,0,-1};light.intensity=2;
     a=sample(false,0);mesh.triangleMaterials.faces[0].metallicity=1;mesh.triangleMaterials.faces[0].roughness=.1f;b=sample(false,0);
@@ -462,6 +869,6 @@ int main(int argc,char** argv){GLFWwindow* window=nullptr;try{
     fs::path screenshot=argc>1?fs::path(argv[1]):fs::path{};auto files=(screenshot.empty()?fs::path("TestData"):screenshot.parent_path())/"ShapeFiles";
     DataTests();GeometryTests();TriangleDataTests();FileTests(files);Check(glfwInit()!=0,"GLFW init");glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
     window=glfwCreateWindow(1100,750,"Shape Editor tests",nullptr,nullptr);Check(window!=nullptr,"Hidden OpenGL context");glfwMakeContextCurrent(window);Check(gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress))!=0,"Load OpenGL");glEnable(GL_DEPTH_TEST);
-    RenderTests();TriangleRenderTests();InteractionTests(screenshot);TriangleUITests(files,screenshot);FileToolbarTests(files);GeneralTests(files,screenshot);FollowerUITests(files,screenshot);Check(glGetError()==GL_NO_ERROR,"Shape editor leaves no GL errors");
+    RenderTests();TriangleRenderTests();ShapeViewportTests();ChessLightingPreviewTests(screenshot);InteractionTests(screenshot);TriangleUITests(files,screenshot);GroupMaterialUITests(files);FileToolbarTests(files);GeneralTests(files,screenshot);FollowerUITests(files,screenshot);Check(glGetError()==GL_NO_ERROR,"Shape editor leaves no GL errors");
     glfwDestroyWindow(window);glfwTerminate();std::cout<<"Custom mesh, serialization, selection, gizmo, rendering and UI interaction tests passed\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';if(window)glfwDestroyWindow(window);glfwTerminate();return 1;}}

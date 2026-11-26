@@ -64,7 +64,7 @@ inline Ray ScreenRay(Vector2 pixel,Vector2 origin,Vector2 size,const Matrix4& vp
 }
 inline std::optional<Vector3> Project(Vector3 world,Vector2 origin,Vector2 size,const Matrix4& vp){
     RICE_BENCHMARK_FUNCTION();
-    auto p=vp*Vector4(world,1);if(p.w<=.0001f)return {};p/=p.w;if(p.z < -1 || p.z > 1)return {};
+    auto p=vp*Vector4(world,1);if(p.w<=0.f)return {};p/=p.w;if(p.z < -1 || p.z > 1)return {};
     return Vector3(origin.x+(p.x+1)*.5f*size.x,origin.y+(1-p.y)*.5f*size.y,p.z);
 }
 inline std::pair<Vector3,Vector3> PrimitiveBounds(GameObject& obj){

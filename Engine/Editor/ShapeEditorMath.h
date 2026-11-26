@@ -1,6 +1,7 @@
 #pragma once
 #include "GizmoMath.h"
 #include "Scene/MeshIntersection.h"
+#include "Scene/ShapeFaceGroups.h"
 #include <set>
 
 namespace Rice {
@@ -8,16 +9,33 @@ struct ShapeSelection {
     std::vector<uint32_t> order;
     std::set<uint32_t> selected;
     int active=-1,anchor=-1,cursor=-1; // active is the last clicked/edited pivot
-    int triangle=-1;
-    void Reset(const ShapeMesh& mesh){ RICE_BENCHMARK_FUNCTION(); order=mesh.VertexOrder();selected.clear();active=anchor=cursor=triangle=-1; }
+    ShapeFaceGroups faceGroups;
+    int triangle=-1,group=-1;
+    void Clear(){selected.clear();active=anchor=cursor=triangle=group=-1;}
+    void Reset(const ShapeMesh& mesh){
+        RICE_BENCHMARK_FUNCTION();
+        order=mesh.VertexOrder();faceGroups=ShapeFaceGroups::Build(mesh);Clear();
+    }
+    bool GroupVertex(uint32_t vertex)const{
+        if(group<0)return false;
+        const auto& vertices=faceGroups.groups[group].vertices;
+        return std::binary_search(vertices.begin(),vertices.end(),vertex);
+    }
+    void SelectGroup(int index){
+        if(index<0||size_t(index)>=faceGroups.groups.size())return;
+        Clear();group=index;
+        const auto& vertices=faceGroups.groups[index].vertices;
+        selected.insert(vertices.begin(),vertices.end());
+    }
     void SelectTriangle(const ShapeMesh& mesh,int index){
         if(index<0||size_t(index)>=mesh.indices.size()/3)return;
-        triangle=index;selected.clear();for(int i=0;i<3;++i)selected.insert(mesh.indices[index*3+i]);active=anchor=cursor=-1;
+        Clear();triangle=index;group=static_cast<int>(faceGroups.triangleToGroup[index]);
+        for(int i=0;i<3;++i)selected.insert(mesh.indices[index*3+i]);
     }
     void Click(int row,bool shift,bool range=false){
         RICE_BENCHMARK_FUNCTION();
         if(row<0||row>=static_cast<int>(order.size()))return;
-        if(shift||!selected.contains(order[row]))triangle=-1;
+        if(shift||!selected.contains(order[row]))triangle=group=-1;
         if(shift&&range&&anchor>=0){selected.clear();for(int i=std::min(anchor,row);i<=std::max(anchor,row);++i)selected.insert(order[i]);}
         else{if(!shift&&!selected.contains(order[row]))selected.clear();selected.insert(order[row]);anchor=row;}
         active=cursor=row;
@@ -25,7 +43,7 @@ struct ShapeSelection {
     void Step(int direction,bool shift){
         RICE_BENCHMARK_FUNCTION();
         if(order.empty())return;
-        triangle=-1;
+        triangle=group=-1;
         int row=std::clamp(cursor<0?0:cursor+direction,0,static_cast<int>(order.size())-1);
         if(shift&&anchor>=0){
             cursor=row;selected.clear();
@@ -37,7 +55,7 @@ struct ShapeSelection {
     int ActiveVertex()const {return active>=0&&active<static_cast<int>(order.size())?static_cast<int>(order[active]):-1;}
     void Box(const std::vector<std::optional<Vector3>>& projected,Vector2 start,Vector2 end,const std::set<uint32_t>& base={}){
         RICE_BENCHMARK_FUNCTION();
-        triangle=-1;selected=base;auto low=glm::min(start,end),high=glm::max(start,end);
+        triangle=group=-1;selected=base;auto low=glm::min(start,end),high=glm::max(start,end);
         for(size_t row=0;row<order.size();++row)if(projected[row]){
             Vector2 p(*projected[row]);if(glm::all(glm::greaterThanEqual(p,low))&&glm::all(glm::lessThanEqual(p,high)))selected.insert(order[row]);
         }
@@ -58,7 +76,7 @@ inline bool HitTriangle(const TriangleMarker& marker,Vector2 mouse){
     return !(positive&&negative);
 }
 inline std::vector<TriangleMarker> TriangleMarkers(const ShapeMesh& mesh,const MeshIntersection& spatial,Vector3 camera,Vector2 origin,Vector2 size,const Matrix4& vp,Vector3 offset=Vector3(0)){
-    std::vector<TriangleMarker> markers;auto [low,high]=mesh.Bounds();float epsilon=std::max(1e-5f,glm::length(high-low)*1e-5f);
+    std::vector<TriangleMarker> markers;auto [low,high]=mesh.Bounds();float epsilon=glm::length(high-low)*1e-5f;
     for(size_t t=0;t<mesh.indices.size()/3;++t){
         TriangleMarker marker;marker.triangle=static_cast<int>(t);Vector3 center(0);bool visible=true;
         for(int c=0;c<3;++c){auto vertex=mesh.positions[mesh.indices[t*3+c]];center+=vertex/3.f;auto point=GizmoMath::Project(vertex-offset,origin,size,vp);if(!point){visible=false;break;}marker.points[c]=Vector2(*point);marker.depth+=point->z/3.f;}
@@ -87,7 +105,7 @@ inline Cube MakeCube(Vector3 center,Vector3 camera,Vector2 origin,Vector2 size,c
         Vector2 low(1e30f),high(-1e30f);
         for(int k=0;k<8;++k){
             auto p=vp*Vector4(center+Vector3(k&1?.5f:-.5f,k&2?.5f:-.5f,k&4?.5f:-.5f)*side,1);
-            if(p.w<=.00001f)return cube;p/=p.w;
+            if(p.w<=0.f)return cube;p/=p.w;
             // This overlay is deliberately not clipped against the mesh camera's
             // depth planes; its center alone determines whether it is on screen.
             screen[k]={origin.x+(p.x+1)*.5f*size.x,origin.y+(1-p.y)*.5f*size.y,p.z};
@@ -138,20 +156,42 @@ inline bool HitCameraIcon(const Matrix4& frame,Vector2 mouse,Vector2 origin,Vect
 inline std::vector<std::optional<Vector3>> ProjectVisible(const ShapeMesh& mesh,const ShapeSelection& selection,const MeshIntersection& spatial,
     Vector3 camera,Vector2 origin,Vector2 size,const Matrix4& vp,Vector3 offset=Vector3(0)){
     RICE_BENCHMARK_FUNCTION();
-    std::vector<std::optional<Vector3>> result(selection.order.size());auto [low,high]=mesh.Bounds();float epsilon=std::max(1e-5f,glm::length(high-low)*1e-5f);
+    std::vector<std::optional<Vector3>> result(selection.order.size());auto [low,high]=mesh.Bounds();float epsilon=glm::length(high-low)*1e-5f;
     for(size_t row=0;row<selection.order.size();++row){auto vertex=mesh.positions[selection.order[row]];auto p=GizmoMath::Project(vertex-offset,origin,size,vp);
         if(p&&p->x>=origin.x&&p->y>=origin.y&&p->x<=origin.x+size.x&&p->y<=origin.y+size.y&&spatial.Visible(camera+offset,vertex,epsilon))result[row]=p;
     }
     return result;
 }
-inline void Translate(ShapeMesh& mesh,const std::vector<Vector3>& start,const std::set<uint32_t>& selected,Vector3 delta){
-    RICE_BENCHMARK_FUNCTION();
-    for(auto index:selected)mesh.positions[index]=start[index]+delta;mesh.Touch();
+// Keep the authored corner directions relative to a face as a vertex drag tilts it.
+// Always use the drag's starting mesh, including when the pointer moves back to its origin.
+inline void ReorientDeformedNormals(ShapeMesh& mesh,const ShapeMesh& start){
+    if(start.normals.empty())return;
+    mesh.normals=start.normals;
+    for(size_t c=0;c<mesh.indices.size();c+=3){
+        const auto* index=mesh.indices.data()+c;
+        auto a=index[0],b=index[1],d=index[2];
+        if(mesh.positions[a]==start.positions[a]&&mesh.positions[b]==start.positions[b]&&mesh.positions[d]==start.positions[d])continue;
+        auto faceNormal=[&](const ShapeMesh& shape){
+            const glm::dvec3 p(shape.positions[a]);
+            return glm::cross(glm::dvec3(shape.positions[b])-p,glm::dvec3(shape.positions[d])-p);
+        };
+        auto before=faceNormal(start),after=faceNormal(mesh);
+        if(before==after||glm::dot(before,before)==0||glm::dot(after,after)==0)continue;
+        const glm::dquat rotation(glm::normalize(before),glm::normalize(after));
+        for(size_t corner=c;corner<c+3;++corner)mesh.normals[corner]=Vector3(rotation*glm::dvec3(start.normals[corner]));
+    }
 }
-inline void Rotate(ShapeMesh& mesh,const std::vector<Vector3>& start,uint32_t pivot,int axis,float degrees){
+inline void Translate(ShapeMesh& mesh,const ShapeMesh& start,const std::set<uint32_t>& selected,Vector3 delta){
+    RICE_BENCHMARK_FUNCTION();
+    for(auto index:selected)mesh.positions[index]=start.positions[index]+delta;
+    ReorientDeformedNormals(mesh,start);mesh.Touch();
+}
+inline void Rotate(ShapeMesh& mesh,const ShapeMesh& start,uint32_t pivot,int axis,float degrees){
     RICE_BENCHMARK_FUNCTION();
     Vector3 normal(0);normal[axis]=1;auto rotation=glm::angleAxis(glm::radians(degrees),normal);
-    for(size_t i=0;i<start.size();++i)mesh.positions[i]=start[pivot]+rotation*(start[i]-start[pivot]);mesh.Touch();
+    for(size_t i=0;i<start.positions.size();++i)mesh.positions[i]=start.positions[pivot]+rotation*(start.positions[i]-start.positions[pivot]);
+    for(size_t i=0;i<start.normals.size();++i)mesh.normals[i]=rotation*start.normals[i];
+    mesh.Touch();
 }
 }
 }

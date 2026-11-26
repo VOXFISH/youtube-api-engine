@@ -321,7 +321,7 @@ YouTube의 polling 계약과 전송 인터페이스는 공식 [liveChatMessages.
 
 [CycleDefinition](../../Engine/Streaming/CycleDefinition.h)은 스크립트 baseline과 필드별 Inspector override, 추가·삭제·순서, orphan 상태를 관리한다. 프로젝트의 `Streaming/cycle.json`에는 초 값을 정수 마이크로초로 저장한다. 동작 주소는 저장하지 않고 native 함수 ID를 현재 실행의 callback catalog에 연결한다. 스크립트가 로드된 뒤 `SetScriptBaseline`을 다시 호출하면 미수정 필드만 새 스크립트 값을 따른다.
 
-[Editor StreamingPanel](../../Engine/Editor/StreamingPanel.h)을 SceneInspector에 연결했다. **Settings → Streaming → YouTube Commands**에서 좌측 명령·우측 native 함수/매개변수/권한을 편집하고, **Window → Settings → Cycle**에서 시간축 drag·순서·기준점·시간·세 플래그와 사이클 길이를 편집한다. 명령 설정은 scene 컴포넌트와 프로젝트의 `Streaming/commands.json`에 저장한다. 프로젝트 재진입 시 Streaming 설정 파일이 해당 Scene의 저장된 명령 override를 복원한다. 임의 C++ 소스 문자열을 실행하지 않고 등록된 함수만 선택할 수 있다.
+[Editor StreamingPanel](../../Engine/Editor/StreamingPanel.h)을 SceneInspector에 연결했다. **Settings → Streaming → YouTube Commands**에서 좌측 명령·우측 native 함수/매개변수/권한을 편집하고, **Settings → Streaming → Cycle**에서 시간축 drag·순서·기준점·시간·세 플래그와 사이클 길이를 편집한다. 명령 설정은 scene 컴포넌트와 프로젝트의 `Streaming/commands.json`에 저장한다. 프로젝트 재진입 시 Streaming 설정 파일이 해당 Scene의 저장된 명령 override를 복원한다. 임의 C++ 소스 문자열을 실행하지 않고 등록된 함수만 선택할 수 있다.
 
 패널의 Local test는 실제 `GameCommandReceiver`와 `CycleScheduler`를 fake clock·모의 API 응답으로 실행한다. **현재 Editor scene의 native 함수와 행동을 실제로 호출하므로 게임 데이터가 바뀔 수 있다.** 별도 테스트 scene/DB 격리는 구현하지 않았다. 상태 변경 없이 먼저 확인하는 `Match only`는 문자열 패턴 매칭만 검사하며 함수·동적 값 공급 callback을 호출하지 않는다. 숫자 변환과 실행 권한의 최종 검사는 실행 경로에서 한다. 이 경로는 신뢰한 로컬 운영자의 테스트이며 YouTube API를 호출하지 않는다. **실제 Player↔Controller IPC로 채팅을 받아 게임 함수에 전달하는 전체 실행 경로는 이 패널의 로컬 테스트와 별도 통합 항목이다.**
 

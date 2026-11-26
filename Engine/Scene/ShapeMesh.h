@@ -2,6 +2,7 @@
 #include "Rice/Benchmark.h"
 #include "Scene.h"
 #include <array>
+#include <iomanip>
 #include <istream>
 #include <ostream>
 #include <map>
@@ -10,13 +11,25 @@
 namespace Rice {
 enum class BasicShape { Cube, Circle, Rectangle, Sphere, Cylinder, Cone, Custom };
 
-// Positions are shared across faces. UVs belong to index-buffer corners so that
-// moving a cube corner cannot tear its UV/normal seams apart.
+struct MeshFaceGroup {
+    std::string name;
+    std::vector<uint32_t> triangles;
+    bool operator==(const MeshFaceGroup&) const = default;
+};
+
+// Positions are shared across faces. UVs and authored normals belong to index-buffer
+// corners so a single editable position can have texture seams and hard edges.
 struct ShapeMesh {
     std::vector<Vector3> positions;
     std::vector<uint32_t> indices;
     std::vector<Vector2> uv;
     uint64_t revision=1;
+    std::vector<MeshFaceGroup> faceGroups;
+    std::vector<Vector3> normals; // Empty, or one per corner. A zero entry uses the geometric face normal.
+
+    bool operator==(const ShapeMesh& other)const {
+        return positions==other.positions&&indices==other.indices&&uv==other.uv&&faceGroups==other.faceGroups&&normals==other.normals;
+    }
 
     void Touch(){ RICE_BENCHMARK_FUNCTION(); ++revision; }
     bool Empty()const { return positions.empty(); }
@@ -40,22 +53,74 @@ struct ShapeMesh {
         for(auto p:positions)for(int a=0;a<3;++a)if(!std::isfinite(p[a]))throw std::runtime_error("Invalid custom vertex");
         for(auto index:indices)if(index>=positions.size())throw std::runtime_error("Invalid custom mesh index");
         for(auto p:uv)if(!std::isfinite(p.x)||!std::isfinite(p.y))throw std::runtime_error("Invalid custom UV");
+        ValidateNormals();
+        if(!faceGroups.empty()){
+            const size_t triangleCount=indices.size()/3;
+            if(faceGroups.size()>triangleCount)throw std::runtime_error("Too many face groups");
+            std::vector<bool> assigned(triangleCount);
+            for(const auto& group:faceGroups){
+                if(group.name.size()>65536||group.triangles.empty())throw std::runtime_error("Invalid face group");
+                for(auto triangle:group.triangles){
+                    if(triangle>=triangleCount||assigned[triangle])throw std::runtime_error("Invalid face group triangle");
+                    assigned[triangle]=true;
+                }
+            }
+        }
     }
     void Write(std::ostream& out)const {
         RICE_BENCHMARK_FUNCTION();
+        if(!normals.empty()){ValidateNormals();out<<"CornerNormals ";}
+        if(!faceGroups.empty())out<<"GroupedMesh ";
         out<<positions.size()<<' '<<indices.size()<<' ';
         for(auto p:positions)out<<p.x<<' '<<p.y<<' '<<p.z<<' ';
         for(auto i:indices)out<<i<<' ';
         for(auto p:uv)out<<p.x<<' '<<p.y<<' ';
+        for(auto n:normals)out<<n.x<<' '<<n.y<<' '<<n.z<<' ';
+        if(!faceGroups.empty()){
+            out<<faceGroups.size()<<' ';
+            for(const auto& group:faceGroups){
+                out<<std::quoted(group.name)<<' '<<group.triangles.size()<<' ';
+                for(auto triangle:group.triangles)out<<triangle<<' ';
+            }
+        }
     }
     void Read(std::istream& in){
         RICE_BENCHMARK_FUNCTION();
-        ShapeMesh next;size_t vertices=0,corners=0;in>>vertices>>corners;
+        ShapeMesh next;size_t vertices=0,corners=0;
+        in>>std::ws;
+        const bool hasNormals=in.peek()=='C';
+        if(hasNormals){
+            std::string format;in>>format>>std::ws;
+            if(format!="CornerNormals")throw std::runtime_error("Invalid custom mesh format");
+        }
+        const bool grouped=in.peek()=='G';
+        if(grouped){
+            std::string format;in>>format;
+            if(format!="GroupedMesh")throw std::runtime_error("Invalid custom mesh format");
+        }
+        in>>vertices>>corners;
         if(!in||vertices>100000||corners>600000||corners%3)throw std::runtime_error("Invalid custom mesh size");
         next.positions.resize(vertices);next.indices.resize(corners);next.uv.resize(corners);
         for(auto& p:next.positions)in>>p.x>>p.y>>p.z;
         for(auto& i:next.indices)in>>i;
         for(auto& p:next.uv)in>>p.x>>p.y;
+        if(hasNormals){
+            next.normals.resize(corners);
+            for(auto& n:next.normals)in>>n.x>>n.y>>n.z;
+        }
+        if(grouped){
+            size_t groupCount=0,remaining=corners/3;
+            in>>groupCount;
+            if(!in||!groupCount||groupCount>remaining)throw std::runtime_error("Invalid face group count");
+            next.faceGroups.resize(groupCount);
+            for(auto& group:next.faceGroups){
+                size_t count=0;in>>std::quoted(group.name)>>count;
+                if(!in||!count||count>remaining)throw std::runtime_error("Invalid face group size");
+                remaining-=count;
+                group.triangles.resize(count);
+                for(auto& triangle:group.triangles)in>>triangle;
+            }
+        }
         if(!in)throw std::runtime_error("Truncated custom mesh");
         next.Validate();next.revision=revision+1;*this=std::move(next);
     }
@@ -100,18 +165,34 @@ struct ShapeMesh {
         }
         return mesh;
     }
-    // Expand only for drawing, rebuilding flat normals after deformation.
+    // Expand the corners for drawing. Missing normals follow the triangle winding.
     std::vector<float> RenderVertices()const {
         RICE_BENCHMARK_FUNCTION();
         std::vector<float> result;result.reserve(indices.size()*8);
+        const bool hasNormals=normals.size()==indices.size();
         for(size_t t=0;t+2<indices.size();t+=3){
             const glm::dvec3 first(positions[indices[t]]), second(positions[indices[t+1]]), third(positions[indices[t+2]]);
             const auto cross=glm::cross(second-first,third-first);
             // Imported dimensions are in meters. Tiny, valid faces still have a surface normal.
-            const auto n=glm::dot(cross,cross)>0.0?Vector3(glm::normalize(cross)):Vector3(0,0,1);
-            for(size_t c=t;c<t+3;++c){auto p=positions[indices[c]];auto tex=uv[c];result.insert(result.end(),{p.x,p.y,p.z,n.x,n.y,n.z,tex.x,tex.y});}
+            const auto faceNormal=glm::dot(cross,cross)>0.0?Vector3(glm::normalize(cross)):Vector3(0,0,1);
+            for(size_t c=t;c<t+3;++c){
+                auto n=faceNormal;
+                if(hasNormals){
+                    const glm::dvec3 authored(normals[c]);
+                    const double lengthSquared=glm::dot(authored,authored);
+                    if(lengthSquared>0&&std::isfinite(lengthSquared))n=Vector3(authored/std::sqrt(lengthSquared));
+                }
+                auto p=positions[indices[c]];auto tex=uv[c];
+                result.insert(result.end(),{p.x,p.y,p.z,n.x,n.y,n.z,tex.x,tex.y});
+            }
         }
         return result;
+    }
+private:
+    void ValidateNormals()const {
+        if(!normals.empty()&&normals.size()!=indices.size())throw std::runtime_error("Invalid custom normal count");
+        for(auto n:normals)if(!std::isfinite(n.x)||!std::isfinite(n.y)||!std::isfinite(n.z))
+            throw std::runtime_error("Invalid custom normal");
     }
 };
 }

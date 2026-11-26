@@ -289,6 +289,9 @@ endif()
 
 if(BUILD_TESTING)
     add_executable(RiceInspectorTests Tests/InspectorTests.cpp)
+    if(MSVC)
+        target_compile_options(RiceInspectorTests PRIVATE /bigobj)
+    endif()
     target_link_libraries(RiceInspectorTests PRIVATE RiceCore RiceBuildOptions glm::glm imgui::imgui)
     add_test(NAME InspectorComponentActions COMMAND RiceInspectorTests "${CMAKE_BINARY_DIR}/TestData/Inspector")
     add_custom_command(TARGET RiceInspectorTests POST_BUILD

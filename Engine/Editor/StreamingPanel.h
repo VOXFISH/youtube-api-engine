@@ -24,24 +24,6 @@ public:
         if (id.empty() || !function) throw std::invalid_argument("Native cycle function requires identity and callback");
         functions_[std::move(id)] = std::move(function);
     }
-    void DrawSettingsMenu() {
-        if (ImGui::BeginMenu("Settings")) {
-            if (ImGui::BeginMenu("Streaming")) {
-                ImGui::MenuItem("YouTube Commands", nullptr, &commandsOpen);
-                ImGui::MenuItem("Cycle", nullptr, &cycleOpen);
-                ImGui::EndMenu();
-            }
-            ImGui::EndMenu();
-        }
-    }
-    // Called while the host's Window menu is open.
-    void DrawWindowSettingsMenu() {
-        if (ImGui::BeginMenu("Settings")) {
-            ImGui::MenuItem("Cycle", nullptr, &cycleOpen);
-            ImGui::MenuItem("YouTube Commands", nullptr, &commandsOpen);
-            ImGui::EndMenu();
-        }
-    }
     void Draw(const std::filesystem::path& projectRoot, const std::string& sceneKey,
         Scene& scene, EntityID selectedObject, const std::function<void()>& beforeEdit = {}) {
         Guard([&] { Synchronize(projectRoot, sceneKey, scene); });

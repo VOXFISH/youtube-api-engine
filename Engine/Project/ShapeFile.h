@@ -39,7 +39,8 @@ public:
         auto finite=[](Vector3 p){return std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z);};
         if(!finite(doc.pivot)||!finite(doc.anchor.position)||!finite(doc.anchor.rotation)||!finite(doc.anchor.localScale))throw std::runtime_error("Invalid shape property");
         std::ostringstream output;output.imbue(std::locale::classic());
-        output<<"RICE_SHAPE 3\n"<<std::setprecision(std::numeric_limits<float>::max_digits10);
+        const int version=!mesh.normals.empty()?5:mesh.faceGroups.empty()?3:4;
+        output<<"RICE_SHAPE "<<version<<'\n'<<std::setprecision(std::numeric_limits<float>::max_digits10);
         mesh.Write(output);output<<'\n'<<doc.pivot.x<<' '<<doc.pivot.y<<' '<<doc.pivot.z<<' '<<doc.hasAnchor<<' '<<doc.anchorEnabled<<' '<<doc.anchorShown<<' ';
         for(auto p:{doc.anchor.position,doc.anchor.rotation,doc.anchor.localScale})output<<p.x<<' '<<p.y<<' '<<p.z<<' ';
         if(!finite(doc.follower.position)||!finite(doc.follower.rotation)||!finite(doc.follower.localScale))throw std::runtime_error("Invalid follower transform");
@@ -54,7 +55,7 @@ public:
         if(data.size()>MaxBytes)throw std::runtime_error("Shape exceeds 16 MiB");
         std::istringstream input(data);input.imbue(std::locale::classic());
         std::string magic;int version=0;input>>magic>>version;
-        if(!input||magic!="RICE_SHAPE"||(version!=1&&version!=2&&version!=3))throw std::runtime_error("Choose a valid Rice Shape (.riceshape) file");
+        if(!input||magic!="RICE_SHAPE"||version<1||version>5)throw std::runtime_error("Choose a valid Rice Shape (.riceshape) file");
         ShapeDocument doc;doc.mesh.Read(input);
         if(version>=2){
             input>>doc.pivot.x>>doc.pivot.y>>doc.pivot.z>>doc.hasAnchor>>doc.anchorEnabled>>doc.anchorShown;

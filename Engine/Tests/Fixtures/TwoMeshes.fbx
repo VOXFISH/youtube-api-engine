@@ -19,6 +19,13 @@ Objects: {
     Geometry: 1, "Geometry::Quad", "Mesh" {
         Vertices: *12 { a: 0,0,0, 100,0,0, 100,100,0, 0,100,0 }
         PolygonVertexIndex: *4 { a: 0,1,2,-4 }
+        LayerElementPolygonGroup: 0 {
+            Version: 101
+            Name: ""
+            MappingInformationType: "ByPolygon"
+            ReferenceInformationType: "IndexToDirect"
+            PolygonGroup: *1 { a: 42 }
+        }
         LayerElementUV: 0 {
             Version: 101
             Name: "UVMap"
@@ -29,6 +36,7 @@ Objects: {
         Layer: 0 {
             Version: 100
             LayerElement: { Type: "LayerElementUV" TypedIndex: 0 }
+            LayerElement: { Type: "LayerElementPolygonGroup" TypedIndex: 0 }
         }
     }
     Model: 2, "Model::Board", "Mesh" {

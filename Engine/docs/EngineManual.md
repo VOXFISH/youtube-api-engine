@@ -49,9 +49,9 @@ Hierarchy에서 객체를 선택하고 Inspector에서 속성을 조절한다. �
 
 MeshRenderer의 **Shape → Custom**을 선택하고 **Open Shape Editor**를 누른다. 처음 Custom으로 전환하면 현재 기본 도형의 정점과 삼각형을 복사한다. Create object → Basic shapes → Custom으로도 만들 수 있으며, 이때 시작 도형은 Cube다. 편집한 Custom을 다른 기본 도형으로 바꿨다가 다시 Custom으로 선택하면 기존 편집 내용을 사용한다.
 
-Shape Editor는 열 때 지정한 오브젝트의 메시만 로컬 좌표로 표시한다. 다른 오브젝트를 선택해도 편집 대상은 바뀌지 않는다. 기본 조명 없이 면의 밝기를 일정하게 표시하며, 휠로 확대·축소하고 가운데 버튼 드래그로 회전한다. 가운데 버튼 클릭 또는 Camera 체크로 카메라 이동 모드를 전환한다. Camera 모드에서는 WASD·Q/E로 이동하고 좌드래그로 패닝, 우드래그로 시선을 회전한다. **Frame shape**는 도형 전체가 보이도록 카메라를 맞춘다.
+Shape Editor는 열 때 지정한 오브젝트의 메시만 로컬 좌표로 표시한다. 다른 오브젝트를 선택해도 편집 대상은 바뀌지 않는다. 처음에는 조명 없이 표시한다. 상단 **View** 옆의 **Lighting preview**를 체크하면 씬의 광원으로 메시를 비춰 FBX 코너 법선이 만드는 곡면 음영을 확인할 수 있다. 활성 광원이 없는 씬에서는 미리보기용 방향광을 사용한다. 체크를 해제하면 원래 표시로 돌아간다. 휠로 확대·축소하고 가운데 버튼 드래그로 회전한다. 가운데 버튼 클릭 또는 Camera 체크로 카메라 이동 모드를 전환한다. Camera 모드에서는 WASD·Q/E로 이동하고 좌드래그로 패닝, 우드래그로 시선을 회전한다. **Frame shape**는 도형 전체가 보이도록 카메라를 맞춘다.
 
-상단에는 **File / Edit / View** 메뉴와 **Save / Load / General / Frame shape / Camera** 툴바가 있다. Shape Editor는 씬과 분리된 편집 사본을 사용하며 **Save → in scene**을 실행할 때 씬에 반영한다. `.riceshape`에는 정점·삼각형 인덱스·UV와 Pivot, Anchor의 위치·회전·크기 및 표시 설정이 저장된다. 씬의 child 연결은 애셋에 저장하지 않는다. 현재 파일명 옆의 `*`는 마지막 파일 저장 이후 변경된 내용이 있음을 표시한다.
+상단에는 **File / Edit / View** 메뉴와 **Save / Load / General / Triangles / Frame shape / Camera** 툴바가 있다. Shape Editor는 씬과 분리된 편집 사본을 사용하며 **Save → in scene**을 실행할 때 씬에 반영한다. `.riceshape`에는 정점·삼각형 인덱스·UV, FBX에서 가져온 코너 법선과 면 그룹, Pivot, Anchor의 위치·회전·크기 및 표시 설정이 저장된다. 씬의 child 연결은 애셋에 저장하지 않는다. 현재 파일명 옆의 `*`는 마지막 파일 저장 이후 변경된 내용이 있음을 표시한다.
 
 | Save 항목 | 동작 | Shape Editor 단축키 |
 |---|---|---|
@@ -65,9 +65,15 @@ Shape Editor는 열 때 지정한 오브젝트의 메시만 로컬 좌표로 표
 
 **Vertex list**는 처음에 숨겨져 있다. 상단 **Edit → Vertex list**로 열고 패널 오른쪽 위 **X**로 닫는다. 패널을 닫으면 View가 넓어지고 정점 선택과 편집 내용은 유지된다. Edit 메뉴에는 Undo/Redo도 있으며, View 메뉴에서 Frame shape와 Camera를 사용할 수 있다.
 
-보이는 각 삼각형에는 중심을 기준으로 화면상 크기를 **20%**로 축소한 흰 삼각형을 표시한다. 이 표시의 가로·세로 중 긴 쪽이 **5px 이하**이면 숨기며, 마우스를 올리면 표시가 **20% 더 커졌다가** 벗어나면 돌아온다. 가려진 면의 표시는 선택할 수 없다. 흰 삼각형을 클릭하면 해당 면의 세 정점이 하늘색으로 표시되고 **Vertex list**와 **Triangle material** 패널이 열린다. Vertex list에서도 같은 정점의 번호와 좌표를 하늘색으로 표시한다. 패널은 **X**로 닫고 **Edit → Triangle material**로 다시 열 수 있다.
+상단 **Lighting preview** 옆의 **Show markers**는 기본으로 켜져 있다. 체크를 해제하면 뷰포트에서 정점과 삼각형을 나타내는 표시가 함께 사라져 곡면 음영을 살펴볼 수 있다. 다시 체크하면 같은 위치에 표시된다.
 
-**Triangle material**은 Inspector와 같은 **Enabled / Metalicity / Roughness / Albedo · Cubemap** 입력을 사용한다. 텍스처와 재질은 선택한 삼각형에만 적용한다. Shape Editor의 조명 없는 미리보기에서는 텍스처를 표시하고, 금속성·거칠기의 조명 반응은 Scene/Game에서 확인한다. 변경은 Shape Editor의 Undo/Redo로 되돌릴 수 있다.
+**Triangles** 버튼이나 **Edit → Triangles**로 면 그룹 목록을 연다. FBX에 지정된 그룹을 사용하고, 그룹 정보가 없는 삼각형은 모서리를 공유하며 같은 평면에 놓인 것끼리 묶는다. 그룹 왼쪽 화살표를 누르면 소속 삼각형을 펼치거나 접는다. 그룹 이름을 누르면 그룹의 모든 정점이 선택된다.
+
+목록에서 삼각형을 누르면 같은 그룹의 면과 정점이 연한 분홍색으로 표시되고, 목록 아래에서 해당 삼각형의 재질을 편집할 수 있다. 미리보기에서 흰 삼각형 표시를 눌러도 같은 동작을 하며, 해당 그룹이 펼쳐지고 **Vertex list**도 열린다. 미리보기의 삼각형 표시는 면의 중심에서 화면상 크기의 **20%**로 그리며, 긴 쪽이 **5px 이하**이거나 다른 면에 가려지면 숨긴다. 가려진 삼각형도 목록에서 선택할 수 있다.
+
+그룹 이름을 누르면 그룹 전체의 **Enabled / Metalicity / Roughness / Albedo · Cubemap**을 편집할 수 있다. 값이 서로 다른 속성은 혼합 상태로 표시되며, 편집한 속성만 소속 삼각형 전체에 적용된다. 삼각형 행을 누르면 해당 삼각형 하나의 속성을 편집한다.
+
+그룹 재질에서 **Link textures**를 체크하면 텍스처 한 장이 그룹 전체에 이어진다. 체크를 해제하면 같은 텍스처가 각 삼각형에 반복된다. 체크를 바꾸면 현재 텍스처의 배치를 미리보기에서 바로 확인할 수 있다. UV 배치는 `.riceshape`에도 저장된다. 금속성과 거칠기가 직접광에 미치는 효과는 **Lighting preview**를 켜거나 Scene/Game 뷰에서 확인한다. 재질과 UV 편집은 Shape Editor의 Undo/Redo를 지원한다.
 
 면별 설정은 **Save → in scene**으로 현재 오브젝트에 적용한다. Inspector와 해당 **Material** 제목에는 **(edited in shape editor)**가 붙는다. Inspector에서 Material을 변경하면 **"all edits from the shape editor will be overwritten!"** 경고가 해당 영역을 덮는다. **Return**은 변경을 취소하고 면별 설정을 유지한다. **Proceed**는 제안한 Material·Texture 설정을 모든 삼각형에 적용하고 edited 표시를 없앤다. 열려 있는 Shape Editor의 면별 설정도 함께 초기화하며 정점 편집 내용은 유지한다. 이 적용은 메인 편집기 Undo로 되돌릴 수 있다.
 
@@ -149,6 +155,8 @@ UI는 화면 좌상단 기준 픽셀 좌표다. UIText의 `{score}`는 샘플 �
 ## 에셋과 입력
 
 툴바 또는 Project 패널의 **Import...**에서 `.fbx` 파일을 고른다. 편집 중인 씬에 모델이 추가되며 Hierarchy에서 하위 오브젝트를 선택해 개별 편집할 수 있다. **Save**를 눌러 씬을 저장한다.
+
+FBX의 코너별 법선은 씬과 `.riceshape`에 보존된다. Scene과 Game은 이 법선을 보간해 곡면을 부드럽게 표시하고, 같은 위치에 서로 다른 법선이 지정된 모서리는 날카롭게 표시한다. 법선이 없거나 길이가 0인 코너에는 해당 삼각형에 수직인 면 법선을 사용한다.
 
 이미지·오디오는 같은 대화상자의 **All assets** 필터로 선택한다. 파일은 프로젝트 `Assets`로 복사되며 Inspector에서 연결할 수 있다. **New relative filename**과 **Rename**으로 하위 폴더 이동·이름 변경을 할 수 있으며 애셋 ID는 유지된다.
 
@@ -439,7 +447,7 @@ Play는 물리·스크립트·애니메이션을 시작한다. 상단 Pause는 �
 
 새 프로젝트와 빈 씬은 `Assets/Skybox/sky.png`를 기본 하늘로 사용한다. **Skybox asset**에서 `sf.png`나 `night.png`로 바꿀 수 있다. 씬을 복제하면 원본의 스카이박스 선택과 활성 상태를 함께 복사한다.
 
-Hierarchy의 Scene 선택창 바로 아래에서 씬별 환경을 설정한다. Skybox 토글과 애셋 선택은 파노라마 또는 cubemap atlas 이미지를 사용한다. Default directional light는 별도의 오브젝트 없이 색상·강도·방향을 설정한다. Ground는 y=0의 연한 회색 무한 평면이며, Ground collision을 켜면 활성 Rigidbody와 비 Trigger BoxCollider를 가진 동적 물체를 지지한다. Kinematic은 기존처럼 지정한 이동을 유지한다.
+메인 편집기 상단의 **Settings → Scene**에서 씬별 환경을 설정한다. **Settings → Streaming**에서 YouTube Commands와 Cycle을 열고, **Settings → Script editor**에서 스크립트를 열 앱을 선택한다. Skybox 토글과 애셋 선택은 파노라마 또는 cubemap atlas 이미지를 사용한다. Default directional light는 별도의 오브젝트 없이 색상·강도·방향을 설정한다. Ground는 y=0의 연한 회색 무한 평면이며, Ground collision을 켜면 활성 Rigidbody와 비 Trigger BoxCollider를 가진 동적 물체를 지지한다. Kinematic은 기존처럼 지정한 이동을 유지한다.
 
 X/Y/Z 축과 XY/YZ/ZX grid는 각각 켜거나 끌 수 있고 Scene 뷰에만 나타난다. Game 뷰, 반사 캡처, 독립 실행 플레이어에는 표시되지 않으며, 내보낸 씬 파일에서는 EditorGrid 설정도 제외된다. 환경 설정은 씬 저장·복제·Undo/Redo·Play/Stop에 함께 반영된다.
 

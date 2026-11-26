@@ -253,8 +253,7 @@ private:
         if(a.index()!=b.index())return false;
         return std::visit([&](const auto& value){
             using T=std::remove_cvref_t<decltype(value)>;const auto& other=std::get<T>(b);
-            if constexpr(std::is_same_v<T,ShapeMesh>)return value.positions==other.positions&&value.indices==other.indices&&value.uv==other.uv;
-            else if constexpr(std::is_same_v<T,TriangleMaterials>)return value.faces==other.faces;
+            if constexpr(std::is_same_v<T,TriangleMaterials>)return value.faces==other.faces;
             else return value==other;
         },a);
     }
@@ -334,7 +333,7 @@ private:
                 std::visit([&](auto* target){
                     using T=std::remove_cvref_t<decltype(*target)>;const auto& source=std::get<T>(value);
                     if constexpr(std::is_same_v<T,ShapeMesh>){
-                        if(target->positions!=source.positions||target->indices!=source.indices||target->uv!=source.uv){auto revision=target->revision;*target=source;target->revision=revision+1;}
+                        if(*target!=source){auto revision=target->revision;*target=source;target->revision=revision+1;}
                     }else if constexpr(std::is_same_v<T,TriangleMaterials>){if(target->faces!=source.faces)*target=source;}
                     else *target=source;
                 },property);

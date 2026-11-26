@@ -165,6 +165,28 @@ private:
         contextObject=0;
         orbitTarget=0;
     }
+    void DrawSceneSettings(Workspace& w){
+        auto& settings=w.editor.scene->settings;
+        BeforeEditorEdit beforeEdit=[&]{BeginSettingsEdit(w);};
+        ImGui::BeginDisabled(w.editor.playing);
+        ImGui::PushItemWidth(ImGui::GetFontSize()*14.f);
+        EditValue(settings.skybox,beforeEdit,[](bool& next){return ImGui::Checkbox("Skybox",&next);});
+        ImGui::BeginDisabled(!settings.skybox);AssetPicker(w,"Skybox asset",settings.skyboxAsset,beforeEdit);ImGui::EndDisabled();
+        EditValue(settings.directionalLight,beforeEdit,[](bool& next){return ImGui::Checkbox("Default directional light",&next);});
+        ImGui::BeginDisabled(!settings.directionalLight);
+        EditValue(settings.lightColor,beforeEdit,[](Vector4& next){return ImGui::ColorEdit4("Light color",&next.x);});
+        EditValue(settings.lightIntensity,beforeEdit,[](float& next){return ImGui::DragFloat("Light intensity",&next,.02f,0,10000,"%.3f",ImGuiSliderFlags_AlwaysClamp);});
+        EditValue(settings.lightDirection,beforeEdit,[](Vector3& next){return ImGui::DragFloat3("Light direction",&next.x,.05f);});
+        ImGui::EndDisabled();
+        EditValue(settings.ground,beforeEdit,[](bool& next){return ImGui::Checkbox("Ground (Y = 0)",&next);});
+        ImGui::BeginDisabled(!settings.ground);EditValue(settings.groundCollision,beforeEdit,[](bool& next){return ImGui::Checkbox("Ground collision",&next);});ImGui::EndDisabled();
+        ImGui::TextUnformatted("Editor guides (not exported)");
+        auto visibility=[&](const char* label,float& value){bool on=value!=0;if(ImGui::Checkbox(label,&on)){beforeEdit();value=on?1.f:0.f;}};
+        visibility("X axis",settings.axes.x);ImGui::SameLine();visibility("Y axis",settings.axes.y);ImGui::SameLine();visibility("Z axis",settings.axes.z);
+        visibility("XY grid",settings.grids.x);ImGui::SameLine();visibility("YZ grid",settings.grids.y);ImGui::SameLine();visibility("ZX grid",settings.grids.z);
+        ImGui::PopItemWidth();
+        ImGui::EndDisabled();
+    }
     void SceneControls(Workspace& w){
         RICE_BENCHMARK_FUNCTION();
         ImGui::BeginDisabled(w.editor.playing);
@@ -182,24 +204,6 @@ private:
             ImGui::EndCombo();
         }
         ImGui::SetItemTooltip("Switch scenes. The current scene is saved first.");
-        if(ImGui::CollapsingHeader("Scene Settings",ImGuiTreeNodeFlags_DefaultOpen)){
-            auto& settings=w.editor.scene->settings;
-            BeforeEditorEdit beforeEdit=[&]{BeginSettingsEdit(w);};
-            EditValue(settings.skybox,beforeEdit,[](bool& next){return ImGui::Checkbox("Skybox",&next);});
-            ImGui::BeginDisabled(!settings.skybox);AssetPicker(w,"Skybox asset",settings.skyboxAsset,beforeEdit);ImGui::EndDisabled();
-            EditValue(settings.directionalLight,beforeEdit,[](bool& next){return ImGui::Checkbox("Default directional light",&next);});
-            ImGui::BeginDisabled(!settings.directionalLight);
-            EditValue(settings.lightColor,beforeEdit,[](Vector4& next){return ImGui::ColorEdit4("Light color",&next.x);});
-            EditValue(settings.lightIntensity,beforeEdit,[](float& next){return ImGui::DragFloat("Light intensity",&next,.02f,0,10000,"%.3f",ImGuiSliderFlags_AlwaysClamp);});
-            EditValue(settings.lightDirection,beforeEdit,[](Vector3& next){return ImGui::DragFloat3("Light direction",&next.x,.05f);});
-            ImGui::EndDisabled();
-            EditValue(settings.ground,beforeEdit,[](bool& next){return ImGui::Checkbox("Ground (Y = 0)",&next);});
-            ImGui::BeginDisabled(!settings.ground);EditValue(settings.groundCollision,beforeEdit,[](bool& next){return ImGui::Checkbox("Ground collision",&next);});ImGui::EndDisabled();
-            ImGui::TextUnformatted("Editor guides (not exported)");
-            auto visibility=[&](const char* label,float& value){bool on=value!=0;if(ImGui::Checkbox(label,&on)){beforeEdit();value=on?1.f:0.f;}};
-            visibility("X axis",settings.axes.x);ImGui::SameLine();visibility("Y axis",settings.axes.y);ImGui::SameLine();visibility("Z axis",settings.axes.z);
-            visibility("XY grid",settings.grids.x);ImGui::SameLine();visibility("YZ grid",settings.grids.y);ImGui::SameLine();visibility("ZX grid",settings.grids.z);
-        }
         if(ImGui::Button("New Scene")){
             duplicateScene=false;sceneName="New Scene";ImGui::OpenPopup("Create Scene");
         }
@@ -584,24 +588,35 @@ private:
         ImGui::MenuItem("Scene",nullptr,&sceneOpen);ImGui::MenuItem("Game",nullptr,&gameOpen);
         ImGui::MenuItem("Project",nullptr,&projectOpen);ImGui::MenuItem("Console",nullptr,&consoleOpen);
         ImGui::MenuItem("Input",nullptr,&inputOpen);ImGui::MenuItem("Benchmark",nullptr,&benchmarkOpen);
-        streamingPanel.DrawWindowSettingsMenu();
         if(ImGui::MenuItem("Save layout"))ImGui::SaveIniSettingsToDisk(layoutPath.c_str());
         if(ImGui::MenuItem("Reset layout")){resetLayout=true;hierarchyOpen=inspectorOpen=projectOpen=consoleOpen=inputOpen=sceneOpen=gameOpen=true;}
         ImGui::EndMenu();
     }
-    void DrawOptions(Workspace& w){
-        streamingPanel.DrawSettingsMenu();
-        if(ImGui::BeginMenu("Options")){
-            if(ImGui::BeginMenu("Script editor")){
-                ImGui::TextWrapped("%s",scriptEditor.empty()?"System default":scriptEditor.c_str());
-                if(ImGui::MenuItem("Choose application..."))Guard(w,[&]{
+    void DrawSettingsMenu(Workspace* workspace){
+        if(!ImGui::BeginMenu("Settings"))return;
+        if(ImGui::BeginMenu("Scene",workspace!=nullptr)){
+            DrawSceneSettings(*workspace);
+            ImGui::EndMenu();
+        }
+        if(ImGui::BeginMenu("Streaming",workspace!=nullptr)){
+            ImGui::MenuItem("YouTube Commands",nullptr,&streamingPanel.commandsOpen);
+            ImGui::MenuItem("Cycle",nullptr,&streamingPanel.cycleOpen);
+            ImGui::EndMenu();
+        }
+        if(ImGui::BeginMenu("Script editor")){
+            ImGui::TextWrapped("%s",scriptEditor.empty()?"System default":scriptEditor.c_str());
+            try {
+                if(ImGui::MenuItem("Choose application...")){
                     if(auto path=PickScriptEditor()){scriptEditor=SceneLabel(*path);SaveEditorSettings();}
-                });
-                if(ImGui::MenuItem("System default",nullptr,scriptEditor.empty()))Guard(w,[&]{scriptEditor.clear();SaveEditorSettings();});
-                ImGui::EndMenu();
+                }
+                if(ImGui::MenuItem("System default",nullptr,scriptEditor.empty())){scriptEditor.clear();SaveEditorSettings();}
+            }catch(const std::exception& error){
+                if(workspace)workspace->Report(error);
+                else ReportOpenError(error.what());
             }
             ImGui::EndMenu();
         }
+        ImGui::EndMenu();
     }
     static void AssetPicker(Workspace& w,const char* label,std::string& id,const BeforeEditorEdit& beforeEdit={}){
         RICE_BENCHMARK_FUNCTION();
@@ -708,6 +723,7 @@ public:
                 ImGui::MenuItem("Save",nullptr,false,false);ImGui::EndMenu();
             }
             DrawWindowMenu();
+            DrawSettingsMenu(nullptr);
             ImGui::BeginDisabled();ImGui::Button("Import...");ImGui::SameLine();ImGui::Button("Play");ImGui::SameLine();ImGui::Button("Pause");ImGui::EndDisabled();
             ImGui::SameLine();ImGui::TextUnformatted("No project loaded");ImGui::EndMainMenuBar();
         }
@@ -768,7 +784,7 @@ public:
                 ImGui::EndMenu();
             }
             DrawWindowMenu();
-        DrawOptions(w);
+            DrawSettingsMenu(&w);
         if(ImGui::Button("Import..."))importAsset();
         ImGui::SameLine();
         ImGui::TextUnformatted("Movable");ImGui::SameLine();
