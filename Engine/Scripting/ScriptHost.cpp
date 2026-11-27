@@ -41,7 +41,7 @@ struct LoadedModule {
             auto entry = reinterpret_cast<const ModuleApi*(*)()>(GetProcAddress(library,"RiceGetScriptApi"));
             if (entry) api = entry();
         }
-        if (!api || (api->abi != 3 && api->abi != ModuleAbi) || !api->create || !api->destroy || !api->tick || !api->read) {
+        if (!api || api->abi<3 || api->abi>ModuleAbi || !api->create || !api->destroy || !api->tick || !api->read) {
             if (library) FreeLibrary(library);
             throw std::runtime_error("Could not load the saved script. Save it again with this editor.");
         }
@@ -92,6 +92,7 @@ struct Session {
     ModuleCatalog published;
     std::map<std::string,std::shared_ptr<LoadedModule>> modules;
     std::unique_ptr<PlayData> data;
+    std::map<std::pair<SignalKind,std::string>,std::uint64_t> signals;
 
     PlayData& DataStore() {
         if (!data) {
@@ -136,6 +137,52 @@ class NativeExecution final : public ScriptExecution {
     std::unique_ptr<Data::DataContext> data;
     struct BoundField { std::function<Value()> get; std::function<void(Value)> set; };
     std::map<std::string,BoundField> fields;
+    struct ComponentObservation {
+        std::string snapshot;
+        std::uint64_t version{},frame{};
+    };
+    std::map<std::string,ComponentObservation> observedComponents;
+    std::uint64_t tick{};
+
+    std::string ComponentSnapshot(std::string_view key) const {
+        auto& object=owner.GetGameObject();
+        std::ostringstream out;
+        out.precision(std::numeric_limits<float>::max_digits10);
+        if(key.empty()||key=="Transform"){
+            auto& transform=object.transform;
+            for(auto value:{transform.position,transform.rotation,transform.localScale,transform.pivot})
+                out<<value.x<<' '<<value.y<<' '<<value.z<<' ';
+            for(int c=0;c<4;++c)for(int r=0;r<4;++r)out<<transform.affine[c][r]<<' ';
+        }
+        for(const auto& type:session->registry.types){
+            if(!key.empty()&&type.name!=key)continue;
+            if(auto* component=type.get(object)){
+                out<<std::quoted(type.name)<<' ';
+                type.fields(*component,[&](const char*,Property field){
+                    if(auto mesh=std::get_if<ShapeMesh*>(&field))out<<(*mesh)->revision;
+                    else WriteProperty(out,field);
+                    out<<' ';
+                });
+            }
+        }
+        return out.str();
+    }
+    std::uint64_t SignalVersion(SignalKind kind,const char* key){
+        if(kind==SignalKind::CollisionStart||kind==SignalKind::CollisionEnd)
+            return session->physics.ContactVersion(owner.GetGameObject().GetID(),kind==SignalKind::CollisionStart);
+        if(kind==SignalKind::ComponentChange){
+            auto [found,added]=observedComponents.try_emplace(key);
+            auto& observation=found->second;
+            if(added||observation.frame!=tick){
+                auto snapshot=ComponentSnapshot(key);
+                if(!added&&snapshot!=observation.snapshot)++observation.version;
+                observation.snapshot=std::move(snapshot);
+                observation.frame=tick;
+            }
+            return observation.version;
+        }
+        return session->signals[{kind,key}];
+    }
 
     bool Move(double x, double y, double z, MoveUnit unit) {
         auto& object=owner.GetGameObject();
@@ -270,6 +317,12 @@ public:
         :session(std::move(play)),module(std::move(binary)),owner(script) {
         Host host{};
         host.user=this;
+        host.timerDelta=[](void* p,bool gameSeconds){
+            auto& scene=static_cast<NativeExecution*>(p)->owner.GetGameObject().GetScene();
+            return gameSeconds?scene.GameDeltaTime():scene.UnscaledDeltaTime();
+        };
+        host.signalVersion=[](void* p,SignalKind kind,const char* key){return static_cast<NativeExecution*>(p)->SignalVersion(kind,key);};
+        host.publishSignal=[](void* p,SignalKind kind,const char* key){++static_cast<NativeExecution*>(p)->session->signals[{kind,key}];};
         host.log=[](void* p,int severity,const char* msg){static_cast<NativeExecution*>(p)->session->log(severity,msg?msg:"");};
         host.diagnostic=[](void* p,std::uint64_t row,const char* message){
             auto& self=*static_cast<NativeExecution*>(p);
@@ -305,7 +358,10 @@ public:
         if(instance) module->api->destroy(instance);
         session->physics.UntrackScriptContacts(observedOwner);
     }
-    void Tick(float dt) override { module->api->tick(instance,dt); }
+    void Tick(float dt) override { ++tick;module->api->tick(instance,dt); }
+    bool TriggerBlocking(uint64_t row) const override {
+        return module->api->abi>=5 && module->api->triggerBlocking && module->api->triggerBlocking(instance,row);
+    }
     bool Read(const char* name, Value& value, uint64_t symbol) override {
         return name && module->Matches(name,symbol) && module->api->read(instance,name,&value);
     }

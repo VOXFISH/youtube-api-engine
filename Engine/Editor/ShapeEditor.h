@@ -239,6 +239,8 @@ private:
         ImGui::SetItemTooltip("Load a shape into the editing copy (Ctrl+O).");
         ImGui::SameLine();if(ImGui::Button("General")){FinishEdit(editor);generalOpen=!generalOpen;}
         ImGui::SameLine();if(ImGui::Button("Triangles"))ToggleTriangleList(editor);
+        ImGui::SameLine();if(ImGui::Button("Vertex Edit"))ToggleVertexList(editor);
+        ImGui::SetItemTooltip("Show or hide the vertex list to select vertices and edit their local coordinates.");
         ImGui::SameLine();ImGui::TextDisabled("|");ImGui::SameLine();
         if(ImGui::Button("Frame shape"))frameRequested=true;
         ImGui::SameLine();ImGui::Checkbox("Camera",&cameraMode);

@@ -389,6 +389,7 @@ class ScriptPanel {
     // Widget implementations use immutable node snapshots while the document
     // reparses individual changes. A child index or C++ address is never a UI ID.
 #include "ScriptPanelWidgets.inl"
+#include "ScriptSignalWidgets.inl"
 #include "ScriptStrategyWidgets.inl"
 
     static bool DetachedChanged(const Entry& e,unsigned id,const View& view){

@@ -46,6 +46,7 @@ private:
     struct ContactRecord { ScriptPeer peer; std::string name; };
     struct Observations {
         uint64_t generation{};
+        uint64_t collisionStarts{},collisionEnds{};
         size_t subscribers{};
         std::map<ScriptPeer,std::string> current, next;
         std::vector<ContactRecord> enter, overlap, exit;
@@ -75,10 +76,16 @@ private:
             history.overlap.clear();
             for(const auto& [peer,name]:history.next){
                 history.overlap.push_back({peer,name});
-                if(!history.current.contains(peer))history.enter.push_back({peer,name});
+                if(!history.current.contains(peer)){
+                    history.enter.push_back({peer,name});
+                    ++history.collisionStarts;
+                }
             }
             for(const auto& [peer,name]:history.current)
-                if(!history.next.contains(peer))history.exit.push_back({peer,name});
+                if(!history.next.contains(peer)){
+                    history.exit.push_back({peer,name});
+                    ++history.collisionEnds;
+                }
             history.current.swap(history.next);
             history.next.clear();
         }
@@ -219,6 +226,11 @@ private:
     }
 public:
     void TrackScriptContacts(EntityID owner){++scriptObservers[owner].subscribers;}
+    uint64_t ContactVersion(EntityID owner,bool start) const {
+        auto history=scriptObservers.find(owner);
+        if(history==scriptObservers.end())return 0;
+        return start?history->second.collisionStarts:history->second.collisionEnds;
+    }
     void UntrackScriptContacts(EntityID owner){
         auto found=scriptObservers.find(owner);
         if(found!=scriptObservers.end()&&!--found->second.subscribers)scriptObservers.erase(found);

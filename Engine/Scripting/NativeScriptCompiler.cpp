@@ -145,11 +145,12 @@ void RetireOlderBuilds(const fs::path& folder, const fs::path& current) {
         if (fs::remove(path,ignored)) fs::remove(path.replace_extension(".cpp"),ignored);
     }
 }
-std::string NativeTranslationUnit(const std::string& source) {
+std::string NativeTranslationUnit(const std::string& source,const std::string& scriptKey) {
     ScriptDocument document;
     document.SetSource(source);
-    if (document.HasModuleEntry()) return source;
-    std::string unit=source+"\n#include \"Scripting/ScriptRuntime.h\"\n";
+    auto unit=document.InstrumentedSource(scriptKey);
+    if (document.HasModuleEntry()) return unit;
+    unit+="\n#include \"Scripting/ScriptRuntime.h\"\n";
     if (document.HasScriptBody()) {
         unit += "RICE_SCRIPT_MODULE("+document.ScriptClassName()+")\n";
     } else {
@@ -257,7 +258,7 @@ void CompileAndSave(const fs::path& project, const fs::path& destination, const 
     if (lease.h == INVALID_HANDLE_VALUE) throw std::runtime_error("Another editor is saving this script.");
     if (fs::exists(folder / "current") && ReadManifest(folder).key != key) throw std::runtime_error("Script cache key conflict.");
     const auto before = fs::exists(path) ? std::optional(Read(path)) : std::nullopt;
-    Write(work / "candidate.cpp", NativeTranslationUnit(source));
+    Write(work / "candidate.cpp", NativeTranslationUnit(source,key));
     std::vector<std::wstring> configure{L"-S",sdk.wstring(),L"-B",work.wstring(),
         L"-DRICE_SOURCE_DIRECTORY=" + path.parent_path().wstring(), L"-DCMAKE_BUILD_TYPE=Release"};
     RunCMake(work, configure);
@@ -311,10 +312,37 @@ void SaveValidatedScript(const fs::path& project,const fs::path& destination,con
     ScriptDocument document;
     document.SetSource(source);
     const auto target=ScriptSourcePath(project,destination);
+    std::map<std::string,std::vector<const ScriptNode*>> externalSignals;
+    for(const auto& row:document.Nodes()){
+        if(row.kind!=NodeKind::EmitEvent&&
+           !((row.kind==NodeKind::Timer||row.kind==NodeKind::Trigger)&&(row.type=="Event"||row.type=="Function")))continue;
+        const auto hash=row.value.rfind('#');
+        constexpr std::string_view prefix="public:";
+        if(row.value.starts_with(prefix)&&hash!=std::string::npos)
+            externalSignals[row.value.substr(prefix.size(),hash-prefix.size())].push_back(&row);
+    }
     std::vector<std::string> texts;
-    for(const auto& file:ScriptFiles(project))if(file.lexically_normal()!=target)texts.push_back(Read(file));
+    for(const auto& file:ScriptFiles(project)){
+        if(file.lexically_normal()==target)continue;
+        texts.push_back(Read(file));
+        const auto scriptKey=ScriptKey(project,file);
+        auto pending=externalSignals.find(scriptKey);
+        if(pending==externalSignals.end())continue;
+        ScriptDocument provider;
+        provider.SetSource(texts.back());
+        for(const auto& symbol:provider.Nodes()){
+            if(!symbol.isPublic||(symbol.kind!=NodeKind::Event&&symbol.kind!=NodeKind::Function))continue;
+            const auto key=SignalKey(symbol,scriptKey);
+            std::erase_if(pending->second,[&](const ScriptNode* use){
+                const auto expected=use->kind==NodeKind::EmitEvent||use->type=="Event"?NodeKind::Event:NodeKind::Function;
+                return symbol.kind==expected&&use->value==key;
+            });
+        }
+    }
     std::vector<std::string_view> others(texts.begin(),texts.end());
     std::string errors;
+    for(const auto& [file,uses]:externalSignals)for(const auto* use:uses)
+        errors+=Utf8(target)+"("+std::to_string(use->line)+"): error: Selected public signal is missing or private in "+file+".\n";
     for (const auto& d:document.Validate(others)) {
         auto message=Utf8(target)+"("+std::to_string(d.line)+"): "+d.message;
         if(d.warning) warn(message);

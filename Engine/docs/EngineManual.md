@@ -54,7 +54,7 @@ MeshRenderer의 **Shape → Custom**을 선택하고 **Open Shape Editor**를 �
 
 Shape Editor는 열 때 지정한 오브젝트의 메시만 로컬 좌표로 표시한다. 다른 오브젝트를 선택해도 편집 대상은 바뀌지 않는다. 처음에는 조명 없이 표시한다. 상단 **View** 옆의 **Lighting preview**를 체크하면 씬의 광원으로 메시를 비춰 FBX 코너 법선이 만드는 곡면 음영을 확인할 수 있다. 활성 광원이 없는 씬에서는 미리보기용 방향광을 사용한다. 체크를 해제하면 원래 표시로 돌아간다. 휠로 확대·축소하고 가운데 버튼 드래그로 회전한다. 가운데 버튼 클릭 또는 Camera 체크로 카메라 이동 모드를 전환한다. Camera 모드에서는 WASD·Q/E로 이동하고 좌드래그로 패닝, 우드래그로 시선을 회전한다. **Frame shape**는 도형 전체가 보이도록 카메라를 맞춘다.
 
-상단에는 **File / Edit / View** 메뉴와 **Save / Load / General / Triangles / Frame shape / Camera** 툴바가 있다. Shape Editor는 씬과 분리된 편집 사본을 사용하며 **Save → in scene**을 실행할 때 씬에 반영한다. `.riceshape`에는 정점·삼각형 인덱스·UV, FBX에서 가져온 코너 법선과 면 그룹, Pivot, Anchor의 위치·회전·크기 및 표시 설정이 저장된다. 씬의 child 연결은 애셋에 저장하지 않는다. 현재 파일명 옆의 `*`는 마지막 파일 저장 이후 변경된 내용이 있음을 표시한다.
+상단에는 **File / Edit / View** 메뉴와 **Save / Load / General / Triangles / Vertex Edit / Frame shape / Camera** 툴바가 있다. Shape Editor는 씬과 분리된 편집 사본을 사용하며 **Save → in scene**을 실행할 때 씬에 반영한다. `.riceshape`에는 정점·삼각형 인덱스·UV, FBX에서 가져온 코너 법선과 면 그룹, Pivot, Anchor의 위치·회전·크기 및 표시 설정이 저장된다. 씬의 child 연결은 애셋에 저장하지 않는다. 현재 파일명 옆의 `*`는 마지막 파일 저장 이후 변경된 내용이 있음을 표시한다.
 
 | Save 항목 | 동작 | Shape Editor 단축키 |
 |---|---|---|
@@ -66,7 +66,7 @@ Shape Editor는 열 때 지정한 오브젝트의 메시만 로컬 좌표로 표
 
 **Load** / **File → Load...** / Ctrl+O로 `.riceshape` 파일을 선택하면 편집 사본에 도형과 General 속성을 적용하고 화면을 맞춘다. 씬의 오브젝트는 유지한다. 불러오기는 Shape Editor의 Undo/Redo로 되돌릴 수 있으며, 선택 취소나 잘못된 파일은 기존 편집 내용을 유지한다. 저장·불러오기 오류는 툴바 아래에 표시한다.
 
-**Vertex list**는 처음에 숨겨져 있다. 상단 **Edit → Vertex list**로 열고 패널 오른쪽 위 **X**로 닫는다. 패널을 닫으면 View가 넓어지고 정점 선택과 편집 내용은 유지된다. Edit 메뉴에는 Undo/Redo도 있으며, View 메뉴에서 Frame shape와 Camera를 사용할 수 있다.
+**Vertex Edit** 버튼을 누르면 **Vertex list** 패널이 열려 정점을 선택하고 X/Y/Z 좌표를 수정할 수 있다. **Edit → Vertex list**로도 같은 패널을 연다. 패널은 처음에 숨겨져 있으며, 버튼을 다시 누르거나 오른쪽 위 **X**를 누르면 닫힌다. 패널을 닫으면 View가 넓어지고 정점 선택과 편집 내용은 유지된다. Edit 메뉴에는 Undo/Redo도 있으며, View 메뉴에서 Frame shape와 Camera를 사용할 수 있다.
 
 상단 **Lighting preview** 옆의 **Show markers**는 기본으로 켜져 있다. 체크를 해제하면 뷰포트에서 정점과 삼각형을 나타내는 표시가 함께 사라져 곡면 음영을 살펴볼 수 있다. 다시 체크하면 같은 위치에 표시된다.
 
@@ -416,12 +416,29 @@ Hierarchy의 Create object 버튼을 누르면 생성 종류를 선택하는 팝
 
 세 유형 모두 Inspector에 **Monkey Script**로 표시됩니다. **Open RiceMonkey**에서 동작을 편집하고 **Save**로 프로젝트의 `Scripts` 폴더에 저장하면 다음 Play부터 적용됩니다. **Open in C++**를 누르면 같은 파일이 지정한 C++ 편집기에서 열립니다.
 
-**Call Function**에서 함수를 선택하거나 식 입력란에 함수 이름을 입력하면 선언한 매개변수마다 인수 칸이 나타납니다. 예를 들어 `Scale(float value, float factor)`에는 `value`와 `factor` 두 칸이 생깁니다. 각 칸에 변수나 다른 함수 호출을 넣을 수 있고, 매개변수가 없는 함수는 인수 없이 호출합니다.
+함수와 클래스 메서드의 **Parameters → Add parameter**를 누르면 매개변수 한 줄이 생깁니다. 한 줄에 `int score` 또는 `float scale = 1`처럼 선언 하나를 입력합니다. 왼쪽 **−** 버튼을 누르면 해당 줄을 지웁니다.
+
+함수나 클래스 이름을 우클릭하고 **Separate Window**를 선택하면 Rice 안에 독립 편집 창이 열립니다. **Apply Changes**를 누르면 그 창에서 수정한 내용이 메인 스크립트 초안에 반영됩니다.
+
+**Call Function**에서 함수를 선택하거나 식 입력란에 함수 이름을 입력하면 선언한 매개변수마다 인수 칸이 나타납니다. 예를 들어 `Scale(float value, float factor)`에는 `value`와 `factor` 두 칸이 생깁니다. 각 칸에 변수나 다른 함수 호출을 넣을 수 있고, 매개변수가 없는 함수는 인수 없이 호출합니다. 가변 인수 함수나 서명을 찾을 수 없는 함수는 **Add argument**로 인수를 한 줄씩 추가합니다.
 **Change Variable**에서 벡터 좌표를 입력할 때는 `Vec2`에 X·Y, `Vec3`에 X·Y·Z 칸이 표시됩니다. 벡터 변수 이름을 입력하면 그 값을 통째로 대입할 수 있습니다.
 
-계속 이동하려면 RiceMonkey의 **Update → Definition → + → Move**를 선택합니다. `Move 2 to (3, 4, 0) per second`는 월드 좌표계의 (3, 4, 0) 방향으로 실제 1초에 2단위를 이동합니다. X 위치는 1.2, Y 위치는 1.6만큼 증가합니다. 같은 행에서 첫 칸을 비우면 X는 3, Y는 4만큼 증가합니다. 음수를 입력하면 반대 방향으로 이동하고, 0을 입력하면 그 행의 이동량은 0입니다.
+계속 이동하려면 RiceMonkey의 **Every Frame → Definition → + → Move**를 선택합니다. `Move 2 to (3, 4, 0) per second`는 월드 좌표계의 (3, 4, 0) 방향으로 실제 1초에 2단위를 이동합니다. X 위치는 1.2, Y 위치는 1.6만큼 증가합니다. 같은 행에서 첫 칸을 비우면 X는 3, Y는 4만큼 증가합니다. 음수를 입력하면 반대 방향으로 이동하고, 0을 입력하면 그 행의 이동량은 0입니다.
 
 단위 목록에서 `second`는 실제 1초, `game second`는 게임 시간 1초를 기준으로 합니다. `frame`을 고르면 이 행을 실행할 때마다 지정한 만큼 한 번 이동합니다. **Change Variable**의 대상 목록에서 **Game Speed**를 골라 `0.5`로 설정하면 다음 프레임부터 게임 시간이 절반 속도로 흐릅니다. 같은 이동을 `game second`로 설정한 오브젝트는 실제 1초 동안 절반의 거리를 이동합니다.
+
+### RiceMonkey의 Trigger
+
+**Every Frame**은 매 프레임 호출되는 C++ `Update`의 편집기 이름입니다. 시간이나 신호에 맞춰 동작을 실행하려면 **Definition → + → Trigger**를 선택합니다.
+
+- **When** 옆 버튼을 **single**로 두면 조건이 처음 충족될 때 한 번 실행합니다. **every**로 두면 시간 간격이 지나거나 신호가 올 때마다 실행합니다. 함수 실행, Event, Collision Start, Collision End, Component Change도 선택할 수 있습니다. Trigger의 선언부에는 지역 변수를, 정의부에는 실행할 동작을 넣습니다. **Break Trigger**는 그 Trigger에서 빠져나옵니다.
+- **block others**를 끄면 Trigger가 별도 코루틴으로 실행되어 다음 행을 진행할 수 있습니다. 켜면 해당 위치에서 기다렸다가 본문을 동기 실행한 후 다음 행을 진행합니다. Every Frame에서 대기 중인 Trigger 아래의 행은 회색으로 표시됩니다. 대기 중에도 다른 스크립트의 Every Frame은 진행됩니다.
+- **Game Seconds**와 **Seconds**를 선택하면 **Duration**에 초 단위 수식을 입력할 수 있습니다. Trigger를 처음 등록할 때 계산한 값을 대기 간격으로 사용합니다. 예를 들어 **every → Game Seconds → 2**는 게임 시간 2초마다 실행합니다. Game Speed가 0.5이면 실제로는 4초 간격입니다. **single → Seconds → 2**는 게임 배속과 관계없이 실제 시간 2초가 지나면 한 번 실행합니다.
+- **Events**에서 이벤트를 선언하고 **Emit Event** 동작으로 발생시킵니다. **private** 이벤트는 선언한 범위에서, **public** 이벤트는 다른 스크립트의 선택창에서도 찾을 수 있습니다. 예를 들어 문 스크립트에서 public 이벤트를 발생시키고 조명 스크립트의 Trigger에서 그 이벤트를 선택하면, 문이 열릴 때 조명을 켤 수 있습니다.
+
+**Functions → Here**에서는 현재 범위의 함수를, **Elsewhere**에서는 다른 스크립트의 공개 함수를 선택합니다. 이전 버전에서 컴파일한 함수를 신호로 사용할 때는 그 함수가 선언된 스크립트를 한 번 저장한 뒤 Play를 시작하세요. **Component Change**는 이 오브젝트의 Transform 또는 선택한 컴포넌트의 추가·제거, 활성 상태, 등록된 속성의 변경을 관찰합니다.
+
+이전 버전에서 저장한 Timer는 **Trigger (inline wait)**로 표시됩니다. 스크립트가 그 행에 도달할 때마다 기다렸다가 본문을 실행하는 기존 동작을 유지합니다.
 
 회전 스냅은 한 번의 드래그에서도 0, 90, 180, 270, 360도 및 이후 모든 90도 간격에 반복 적용됩니다. 다음 구간으로 갔다가 이전 구간으로 돌아오면 이전 구간의 스냅도 다시 활성화됩니다. 스냅 해제 직후 같은 구간에서 역방향으로 움직이면 중심 각도까지 미세 조절할 수 있습니다.
 

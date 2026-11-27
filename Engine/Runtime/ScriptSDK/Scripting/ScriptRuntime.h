@@ -11,6 +11,7 @@
 #include <exception>
 #include <functional>
 #include <limits>
+#include <list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -23,7 +24,20 @@
 #include <vector>
 
 namespace Rice::Scripting {
-inline constexpr std::uint32_t ModuleAbi = 4;
+inline constexpr std::uint32_t ModuleAbi = 5;
+enum class SignalKind : int { Function, Event, CollisionStart, CollisionEnd, ComponentChange, GameSeconds, Seconds };
+struct EventTag {};
+class TriggerLifetime {
+    mutable std::shared_ptr<char> identity;
+public:
+    TriggerLifetime() = default;
+    TriggerLifetime(const TriggerLifetime&) {}
+    TriggerLifetime& operator=(const TriggerLifetime&) { identity.reset(); return *this; }
+    std::weak_ptr<void> Token() const {
+        if (!identity) identity=std::make_shared<char>();
+        return identity;
+    }
+};
 enum class Severity : int { Info, Warning, Error };
 enum class Phase : int { Collision, Overlap, OverlapEnd };
 enum class MoveUnit : int { Second, GameSecond, Frame };
@@ -55,6 +69,9 @@ struct Host {
     bool (*move)(void*, double x, double y, double z, MoveUnit){};
     float (*gameSpeed)(void*){};
     void (*setGameSpeed)(void*, float speed){};
+    float (*timerDelta)(void*,bool gameSeconds){};
+    std::uint64_t (*signalVersion)(void*, SignalKind, const char*){};
+    void (*publishSignal)(void*, SignalKind, const char*){};
 };
 struct ModuleApi {
     std::uint32_t abi;
@@ -62,17 +79,38 @@ struct ModuleApi {
     void (*tick)(void*, float dt);
     void (*destroy)(void*);
     bool (*read)(void*, const char*, Value*);
+    bool (*triggerBlocking)(void*, std::uint64_t);
 };
 
 template<class T> std::vector<T> Snapshot(const std::vector<T>& list) { return list; }
 
 namespace Detail {
 struct EndInvocation {};
-struct Execution {
-    explicit Execution(Host callbacks) : host(callbacks) {}
-    Host host;
+struct EndTrigger {};
+struct Suspension {
     std::coroutine_handle<> suspended{};
     double remaining{};
+    std::optional<bool> timerClock;
+};
+struct Execution : Suspension {
+    explicit Execution(Host callbacks) : host(callbacks) {}
+    Host host;
+    std::map<std::pair<SignalKind,std::string>,std::uint64_t> signals;
+    bool LocalSignal(SignalKind kind,const char* key) const {
+        return (kind==SignalKind::Function||kind==SignalKind::Event)&&std::string_view(key).starts_with("private:");
+    }
+    std::uint64_t Version(SignalKind kind,const char* key) {
+        if (!LocalSignal(kind,key)&&host.signalVersion) return host.signalVersion(host.user,kind,key);
+        auto it=signals.find({kind,key});
+        return it==signals.end()?0:it->second;
+    }
+    void Publish(SignalKind kind,const char* key) {
+        if (!LocalSignal(kind,key)&&host.publishSignal) host.publishSignal(host.user,kind,key);
+        else ++signals[{kind,key}];
+    }
+    float Elapsed(std::optional<bool> clock) const {
+        return std::max(0.f,clock&&host.timerDelta?host.timerDelta(host.user,*clock):dt);
+    }
     std::size_t budget{};
     float dt{};
     bool pendingStop{};
@@ -95,6 +133,10 @@ template<> struct TaskResult<void> {
     void return_void() noexcept {}
     void Take() const noexcept {}
 };
+}
+
+inline void SignalCurrentFunction(const char* key) {
+    if (Detail::current) Detail::current->Publish(SignalKind::Function,key);
 }
 
 // A parent owns its awaited child. Symmetric transfer links completion back
@@ -168,6 +210,126 @@ class ScriptBase {
     std::map<std::string, std::string> states;
     std::deque<StateKey> changes;
     bool processing{};
+    struct TriggerClock {
+        double interval;
+        std::uint64_t armedTick;
+        double elapsed{};
+        bool due{};
+        void Advance(double delta,std::uint64_t tick) {
+            if(tick==armedTick)return;
+            elapsed+=delta;
+            if(elapsed>=interval){
+                // Retain the phase after a long frame. A busy handler needs only one pending firing.
+                elapsed=interval>0?std::fmod(elapsed,interval):0;
+                due=true;
+            }
+        }
+    };
+    struct TriggerState {
+        std::uint64_t row{}, seen{}, completed{}, consumed{};
+        std::weak_ptr<void> owner;
+        SignalKind kind{};
+        std::string key;
+        std::optional<TriggerClock> clock;
+        bool every{}, armed=true;
+        unsigned gates{};
+        std::function<void()> sync;
+        std::function<Task<>()> async;
+        Detail::Suspension suspension;
+        std::optional<Task<>> running;
+        bool Expired() const {
+            std::weak_ptr<void> empty;
+            return owner.expired()&&(empty.owner_before(owner)||owner.owner_before(empty));
+        }
+        bool ConsumeOccurrence(Detail::Execution& execution) {
+            if(clock)return std::exchange(clock->due,false);
+            if(seen==execution.Version(kind,key.c_str()))return false;
+            ++seen;
+            return true;
+        }
+        void Disarm() {
+            armed=false;
+            running.reset();
+            sync={};
+            async={};
+        }
+    };
+    std::list<std::shared_ptr<TriggerState>> triggers;
+    std::uint64_t triggerTick{};
+    std::shared_ptr<TriggerState> FindTrigger(std::uint64_t row,const std::weak_ptr<void>& owner) const {
+        for(const auto& trigger:triggers)
+            if(trigger->row==row&&!trigger->owner.owner_before(owner)&&!owner.owner_before(trigger->owner))
+                return trigger;
+        return {};
+    }
+    template<class Source>
+    std::pair<std::shared_ptr<TriggerState>,bool> Subscribe(std::uint64_t row,SignalKind kind,Source source,
+                                                            bool every,const std::weak_ptr<void>& owner) {
+        if(auto previous=FindTrigger(row,owner))return {previous,false};
+        auto state=std::make_shared<TriggerState>();
+        state->row=row;state->kind=kind;state->every=every;state->owner=owner;
+        const bool timed=kind==SignalKind::GameSeconds||kind==SignalKind::Seconds;
+        if constexpr(std::is_convertible_v<Source,const char*>){
+            if(timed)RowError(row,"A timed trigger requires a numeric duration.");
+            state->key=source;
+            state->seen=execution->Version(kind,source);
+        }else{
+            const double seconds=static_cast<double>(source);
+            if(!timed||!std::isfinite(seconds)||seconds<0)
+                RowError(row,"Trigger duration must be a finite, non-negative number.");
+            state->clock=TriggerClock{seconds,triggerTick};
+        }
+        triggers.push_back(state);
+        return {state,true};
+    }
+    void TickTriggers() {
+        ++triggerTick;
+        for(auto it=triggers.begin();it!=triggers.end();){
+            auto& trigger=**it;
+            if(trigger.Expired()){
+                trigger.Disarm();
+                it=triggers.erase(it);
+                continue;
+            }
+            ++it;
+            if(!trigger.armed)continue;
+            if(trigger.clock)
+                trigger.clock->Advance(execution->Elapsed(trigger.kind==SignalKind::GameSeconds),triggerTick);
+            auto& foreground=static_cast<Detail::Suspension&>(*execution);
+            struct Restore {
+                Detail::Suspension& foreground;
+                Detail::Suspension& background;
+                ~Restore(){std::swap(foreground,background);}
+            } restore{foreground,trigger.suspension};
+            std::swap(foreground,trigger.suspension);
+            try {
+                if(trigger.running){
+                    foreground.remaining-=execution->Elapsed(foreground.timerClock);
+                    if(foreground.remaining>0)continue;
+                    auto resume=std::exchange(foreground.suspended,{});
+                    if(!resume)throw std::logic_error("Trigger suspended outside a script wait or loop.");
+                    resume.resume();
+                }else{
+                    if(!trigger.ConsumeOccurrence(*execution))continue;
+                    if(trigger.sync)trigger.sync();
+                    else{
+                        trigger.running.emplace(trigger.async());
+                        trigger.running->Resume();
+                    }
+                }
+                execution->CheckInvocation();
+                if(trigger.running){
+                    if(!trigger.running->Done())continue;
+                    trigger.running->Finish();
+                    trigger.running.reset();
+                }
+                ++trigger.completed;
+                if(!trigger.every)trigger.Disarm();
+            } catch(const Detail::EndTrigger&) {
+                trigger.Disarm();
+            }
+        }
+    }
     [[noreturn]] void RowError(std::uint64_t row, const char* message) const {
         if (row && execution && execution->host.diagnostic)
             execution->host.diagnostic(execution->host.user,row,message);
@@ -191,12 +353,10 @@ public:
     template<class T> T RunNow(Task<T> task) {
         // These callbacks cannot retain a suspended invocation past their exit.
         // Restore the outer frame's checkpoint even when validation was bypassed.
-        auto pending = execution->suspended;
-        double remaining = execution->remaining;
+        const auto pending=static_cast<const Detail::Suspension&>(*execution);
         task.Resume();
         if (!task.Done()) {
-            execution->suspended = pending;
-            execution->remaining = remaining;
+            static_cast<Detail::Suspension&>(*execution)=pending;
             throw std::logic_error("A synchronous callback cannot wait or yield.");
         }
         return task.Finish();
@@ -255,9 +415,11 @@ public:
     struct WaitPoint {
         Detail::Execution& execution;
         double seconds;
+        std::optional<bool> timerClock;
         bool await_ready() const noexcept { return false; }
         void await_suspend(std::coroutine_handle<> invocation) const noexcept {
             execution.remaining = seconds;
+            execution.timerClock = timerClock;
             execution.suspended = invocation;
         }
         void await_resume() const noexcept {}
@@ -266,6 +428,48 @@ public:
         if (!std::isfinite(seconds) || seconds < 0)
             RowError(row,"Wait duration must be a finite, non-negative number.");
         return {*execution, seconds};
+    }
+    Task<bool> TimerSeconds(double seconds,bool gameSeconds,std::uint64_t row=0) {
+        auto delay=Wait(seconds,row);
+        delay.timerClock=gameSeconds;
+        co_await delay;
+        co_return true;
+    }
+    Task<bool> TimerSignal(SignalKind kind,std::string key,std::uint64_t =0) {
+        auto initial=execution->Version(kind,key.c_str());
+        do { co_await Wait(0); } while(execution->Version(kind,key.c_str())==initial);
+        co_return true;
+    }
+    void EmitEvent(const char* key) { execution->Publish(SignalKind::Event,key); }
+    void SignalFunction(const char* key) { execution->Publish(SignalKind::Function,key); }
+    [[noreturn]] void BreakTrigger() { throw Detail::EndTrigger{}; }
+    bool HasTrigger(std::uint64_t row,const std::weak_ptr<void>& owner={}) const {
+        return static_cast<bool>(FindTrigger(row,owner));
+    }
+    template<class F,class Source> void WatchTrigger(std::uint64_t row,SignalKind kind,Source source,bool every,
+                                        F body,std::weak_ptr<void> owner={}) {
+        auto [state,added]=Subscribe(row,kind,source,every,owner);
+        if(added)state->async=std::move(body);
+    }
+    template<class F,class Source> Task<> BlockTrigger(std::uint64_t row,SignalKind kind,Source source,bool every,
+                                          F body,std::weak_ptr<void> owner={}) {
+        auto [state,added]=Subscribe(row,kind,source,every,owner);
+        if(added)state->sync=std::move(body);
+        struct Gate {
+            TriggerState& trigger;
+            bool ownsBorrowedBody;
+            ~Gate(){
+                --trigger.gates;
+                if(ownsBorrowedBody&&trigger.armed)trigger.Disarm();
+            }
+        } gate{*state,added&&!every};
+        ++state->gates;
+        while(state->armed&&state->completed==state->consumed)co_await Wait(0);
+        if(state->consumed<state->completed)++state->consumed;
+    }
+    bool TriggerBlocking(std::uint64_t row) const {
+        for(const auto& trigger:triggers)if(trigger->row==row&&trigger->gates&&trigger->armed)return true;
+        return false;
     }
     struct LoopPoint {
         Detail::Execution& execution;
@@ -542,6 +746,7 @@ public:
     }
     ~Instance() {
         ContextGuard guard(execution);
+        script->triggers.clear();
         running.reset();
         script.reset();
     }
@@ -552,8 +757,9 @@ public:
             execution.CheckInvocation();
             execution.dt = dt;
             execution.budget = iterationBudget;
+            script->TickTriggers();
             if (running) {
-                execution.remaining = std::max(0.0, execution.remaining - std::max(0.f, dt));
+                execution.remaining = std::max(0.0, execution.remaining - execution.Elapsed(execution.timerClock));
                 if (execution.remaining > 0) return;
                 auto resume = std::exchange(execution.suspended, {});
                 if (!resume) throw std::logic_error("Script suspended outside a script wait or loop.");
@@ -577,6 +783,7 @@ public:
         } catch (const EndInvocation&) {
             // Self-deactivation completes this invocation, including its caller.
             started = true;
+            script->triggers.clear();
             ResetCall();
         } catch (const std::exception& error) {
             Fail(error.what());
@@ -585,6 +792,7 @@ public:
         }
     }
     bool Read(const char* name, Value& out) const { return script->Read(name, out); }
+    bool TriggerBlocking(std::uint64_t row) const { return script->TriggerBlocking(row); }
 private:
     template<class F> static Task<> SynchronousCall(F action) {
         action();
@@ -607,6 +815,7 @@ private:
     void Fail(const char* reason) noexcept {
         failed = true;
         script->Log(Severity::Error, reason);
+        script->triggers.clear();
         ResetCall();
     }
     Detail::Execution execution;
@@ -634,7 +843,8 @@ template<class Script> const ModuleApi* ModuleFor() {
             if (!p || !name || !out) return false;
             try { return static_cast<Instance*>(p)->Read(name, *out); }
             catch (...) { return false; }
-        }};
+        },
+        [](void* p,std::uint64_t row){return p&&static_cast<Instance*>(p)->TriggerBlocking(row);}};
     return &api;
 }
 

@@ -103,6 +103,172 @@ struct NativeLifecycle : ScriptBase {
         return true;
     }
 };
+struct TriggerProbe : ScriptBase {
+    int frames{},pulses{},once{},privateHits{},continued{};
+    Task<> Start(){
+        WatchTrigger(1,SignalKind::Function,"public:go",true,[this]() -> Task<> {
+            ++pulses;
+            co_await Wait(0);
+            if(pulses==2)BreakTrigger();
+        });
+        WatchTrigger(2,SignalKind::Event,"private:ping",false,[this]() -> Task<> {
+            ++privateHits; co_return;
+        });
+        localPublisher=this;
+        co_return;
+    }
+    static inline TriggerProbe* localPublisher{};
+    Task<> Update(){
+        ++frames;
+        co_await BlockTrigger(3,SignalKind::Event,"public:unlock",false,[&]{++once;});
+        ++continued;
+    }
+    bool Read(const char* name,Value& out) const {
+        const std::string_view n=name;
+        out=ToValue(n=="frames"?frames:n=="once"?once:n=="private"?privateHits:n=="pulses"?pulses:continued);
+        return true;
+    }
+};
+struct TimerProbe : ScriptBase {
+    int stage{};
+    Task<> Start(){
+        if(co_await TimerSeconds(1,false,11))++stage;
+        if(co_await TimerSeconds(1,true,12))++stage;
+        if(co_await TimerSignal(SignalKind::Function,"public:clock",13))++stage;
+    }
+    bool Read(const char*,Value& out) const {out=ToValue(stage);return true;}
+};
+struct TimedTriggerProbe : ScriptBase {
+    int realSingle{},realEvery{},gameEvery{},zero{},busyStarts{},busyEnds{},samples{},unlocked{},suffix{};
+    TriggerLifetime owner;
+    static inline TimedTriggerProbe* current{};
+    TimedTriggerProbe(){current=this;}
+    Task<> Start(){
+        WatchTrigger(31,SignalKind::Seconds,.5,false,[this]() -> Task<>{++realSingle;co_return;},owner.Token());
+        WatchTrigger(32,SignalKind::Seconds,.5,true,[this]() -> Task<>{++realEvery;co_return;});
+        WatchTrigger(33,SignalKind::GameSeconds,1,true,[this]() -> Task<>{++gameEvery;co_return;});
+        WatchTrigger(34,SignalKind::Seconds,0,true,[this]() -> Task<>{if(++zero==2)BreakTrigger();co_return;});
+        WatchTrigger(35,SignalKind::Seconds,.25,true,[this]() -> Task<>{
+            ++busyStarts;
+            co_await Wait(0);
+            co_await Wait(0);
+            ++busyEnds;
+        });
+        co_return;
+    }
+    Task<> Update(){
+        co_await BlockTrigger(36,SignalKind::GameSeconds,HasTrigger(36)?0.0:(++samples)*.5,
+                              false,[this]{++unlocked;});
+        ++suffix;
+    }
+    bool Read(const char*,Value&) const {return false;}
+};
+struct LifetimeProbe : ScriptBase {
+    int startDone{},persistent{},borrowed{},ended{};
+    std::optional<TriggerLifetime> scope{std::in_place};
+    Task<> Start(){
+        WatchTrigger(21,SignalKind::Event,"private:nested",true,[this]() -> Task<> {
+            int local=7;
+            co_await BlockTrigger(22,SignalKind::Event,"private:finish",false,[&]{borrowed=local;});
+            ++ended;
+        },scope->Token());
+        co_await BlockTrigger(23,SignalKind::Event,"private:pulse",true,[this]{
+            if(++persistent==2)BreakTrigger();
+        });
+        ++startDone;
+    }
+    bool Read(const char*,Value&)const{return false;}
+    static inline LifetimeProbe* current{};
+    LifetimeProbe(){current=this;}
+};
+struct SignalBus {
+    std::map<std::pair<SignalKind,std::string>,std::uint64_t> versions;
+    float game{},real{};
+    Host Callbacks(){
+        Host host{};
+        host.user=this;
+        host.signalVersion=[](void* p,SignalKind kind,const char* key){return static_cast<SignalBus*>(p)->versions[{kind,key}];};
+        host.publishSignal=[](void* p,SignalKind kind,const char* key){++static_cast<SignalBus*>(p)->versions[{kind,key}];};
+        host.timerDelta=[](void* p,bool game){auto& bus=*static_cast<SignalBus*>(p);return game?bus.game:bus.real;};
+        return host;
+    }
+};
+void TestTimedTriggers(){
+    SignalBus bus;
+    Detail::Instance<TimedTriggerProbe> instance(bus.Callbacks());
+    auto& probe=*TimedTriggerProbe::current;
+    instance.Tick(0);
+    Check(probe.HasTrigger(31,probe.owner.Token())&&!probe.HasTrigger(31)&&instance.TriggerBlocking(36),
+          "Timed triggers are registered per owner and the blocking caller waits");
+    Check(probe.zero==0&&probe.suffix==0,"A zero-duration trigger first becomes due on the next active tick");
+    bus.real=.75f;
+    instance.Tick(0);
+    bus.real=.25f;
+    instance.Tick(0);
+    Check(probe.realSingle==1&&probe.realEvery==2&&probe.zero==2&&probe.gameEvery==0&&probe.suffix==0,
+          "Seconds keeps its fractional phase while the game clock is stopped");
+    bus.real=4;
+    instance.Tick(0);
+    Check(probe.realEvery==3&&probe.busyStarts==1&&probe.busyEnds==1,
+          "A long tick coalesces elapsed intervals without overlapping a suspended handler");
+    bus.real=0;
+    bus.game=.5f;
+    instance.Tick(0);
+    Check(probe.busyStarts==2&&probe.unlocked==1&&probe.suffix==1&&!instance.TriggerBlocking(36),
+          "A pending timed firing runs after its body completes and the scaled gate releases its caller");
+    instance.Tick(0);
+    bus.game=1;
+    instance.Tick(0);
+    Check(probe.realEvery==3&&probe.realSingle==1&&probe.gameEvery==2&&probe.zero==2&&probe.samples==1&&probe.suffix==3,
+          "Single and break stay retired, every follows game time, and revisiting a row does not resample the duration");
+    for(double invalid:{-1.,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}){
+        bool rejected=false;
+        try {probe.WatchTrigger(37,SignalKind::Seconds,invalid,true,[]() -> Task<>{co_return;});}
+        catch(const std::invalid_argument&){rejected=true;}
+        Check(rejected&&!probe.HasTrigger(37),"A bad duration is rejected without registering a listener");
+    }
+}
+void TestTriggersAndTimers(){
+    SignalBus bus,otherScene;
+    Detail::Instance<TriggerProbe> one(bus.Callbacks()),two(bus.Callbacks()),elsewhere(otherScene.Callbacks());
+    one.Tick(0); auto* emitter=TriggerProbe::localPublisher;
+    two.Tick(0);elsewhere.Tick(0);
+    Check(one.TriggerBlocking(3)&&Read(one,"continued")==0,"Blocking trigger suspends the Update suffix");
+    emitter->SignalFunction("public:go");emitter->SignalFunction("public:go");emitter->SignalFunction("public:go");
+    emitter->EmitEvent("private:ping"); emitter->EmitEvent("public:unlock");
+    for(int frame=0;frame<6;++frame){one.Tick(0);two.Tick(0);elsewhere.Tick(0);}
+    Check(!one.TriggerBlocking(3)&&Read(one,"once")==1&&Read(one,"continued")==6,
+          "A blocking once resumes its caller and skips the retired trigger on later frames");
+    Check(Read(one,"pulses")==2&&Read(two,"pulses")==2&&Read(elsewhere,"pulses")==0,
+          "Public function pulses queue across instances; break retires a suspended every handler");
+    Check(Read(one,"private")==1&&Read(two,"private")==0&&elsewhere.TriggerBlocking(3),
+          "Private events stay in their instance and public events stay in their play scene");
+
+    Detail::Instance<TimerProbe> timer(bus.Callbacks());
+    bus.real=.5f;
+    timer.Tick(0);timer.Tick(0);timer.Tick(0);
+    Check(Read(timer,"stage")==1,"Seconds counts unscaled time even at zero game speed");
+    timer.Tick(0);bus.game=.5f;
+    timer.Tick(0);timer.Tick(0);
+    Check(Read(timer,"stage")==2,"Game Seconds counts the scaled scene clock");
+    emitter->SignalFunction("public:other");timer.Tick(0);
+    Check(Read(timer,"stage")==2,"A timer waits for the selected function");
+    emitter->SignalFunction("public:clock");timer.Tick(0);
+    Check(Read(timer,"stage")==3,"A selected function invocation completes its timer");
+
+    Detail::Instance<LifetimeProbe> lifetime(bus.Callbacks());
+    lifetime.Tick(0);
+    auto& probe=*LifetimeProbe::current;
+    probe.EmitEvent("private:nested");
+    probe.EmitEvent("private:pulse");
+    lifetime.Tick(0);
+    Check(lifetime.TriggerBlocking(22)&&probe.startDone==1,"A nested trigger can await its own gate while Start returns");
+    probe.scope.reset();
+    probe.EmitEvent("private:finish");
+    for(int i=0;i<3;++i){probe.EmitEvent("private:pulse");lifetime.Tick(0);}
+    Check(!lifetime.TriggerBlocking(22)&&probe.ended==0&&probe.borrowed==0&&probe.persistent==2,
+          "Expiration cancels the borrowed gate before destroying its locals; every stays armed past Start until break");
+}
 struct DestroyingScript : ScriptBase {
     int created{},destroyed{},continued{};
     struct Local {
@@ -214,6 +380,8 @@ void TestCompoundValues() {
 
 int main() {
     try {
+        TestTriggersAndTimers();
+        TestTimedTriggers();
         Observed io;
         Detail::Instance<WaitScript> first(io.Callbacks()), other(io.Callbacks());
         first.Tick(.3f); other.Tick(.2f);

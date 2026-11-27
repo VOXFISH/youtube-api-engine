@@ -34,11 +34,11 @@ std::string Trim(std::string_view s) {
 bool Identifier(std::string_view s) {
     return !s.empty() && Letter(s.front()) && std::all_of(s.begin()+1,s.end(),Word);
 }
-bool Decl(NodeKind k) { return k == NodeKind::Variable || k == NodeKind::Function || k == NodeKind::Class; }
+bool Decl(NodeKind k) { return k == NodeKind::Variable || k == NodeKind::Function || k == NodeKind::Class || k==NodeKind::Event; }
 bool Callback(NodeKind k) { return k==NodeKind::Start || k==NodeKind::Update || k==NodeKind::OnCreate || k==NodeKind::OnDestroy; }
 bool Branch(NodeKind k) { return k==NodeKind::Condition || k==NodeKind::ElseIf || k==NodeKind::Else; }
 bool StateCallback(NodeKind k) {return k==NodeKind::OnEnter||k==NodeKind::OnUpdate||k==NodeKind::OnExit;}
-bool Owner(NodeKind k) { return (Decl(k) && k!=NodeKind::Variable) || Callback(k) || Branch(k) || k==NodeKind::Loop || k==NodeKind::State || StateCallback(k); }
+bool Owner(NodeKind k) { return k==NodeKind::Function || k==NodeKind::Class || k==NodeKind::Trigger || k==NodeKind::Timer || Callback(k) || Branch(k) || k==NodeKind::Loop || k==NodeKind::State || StateCallback(k); }
 bool Returning(NodeKind k) { return k==NodeKind::Start || k==NodeKind::Update || k==NodeKind::Function; }
 std::vector<std::string_view> References(const ScriptNode&);
 
@@ -199,11 +199,27 @@ ScriptId Hash(std::string_view text,ScriptId h=1469598103934665603ull) {
     for(unsigned char c:text)h=(h^c)*1099511628211ull;
     return h?h:1;
 }
-std::string PlainExpression(const std::string& expression) {
+const ScriptNode* EnclosingTrigger(const ScriptDocument& doc,ScriptId owner){
+    for(auto* p=doc.Get(owner);p;p=doc.Get(p->parent)){
+        if(p->kind==NodeKind::Trigger)return p;
+        if(Returning(p->kind)||Callback(p->kind)||StateCallback(p->kind)||p->kind==NodeKind::Class)break;
+    }
+    return nullptr;
+}
+std::string PlainExpression(const std::string& expression,bool inTrigger=false) {
     CppTokens t(expression);
     std::vector<std::pair<std::size_t,std::size_t>> drops;
     for(std::size_t i=0;i<t.items.size();++i){
         if(t.V(i)=="riceOwner"&&(t.V(i+1)=="."||t.V(i+1)=="->")){drops.push_back({t.items[i].from,t.items[i+1].to-t.items[i].from});continue;}
+        if(inTrigger&&t.V(i)=="RunNow"&&t.V(i+1)=="("){
+            auto fn=i+2;
+            if(t.V(fn)=="riceOwner"&&t.V(fn+1)=="->")fn+=2;
+            auto close=t.items[i+1].mate;
+            if(close!=missing&&Identifier(t.V(fn))&&t.V(fn+1)=="("&&t.items[fn+1].mate+1==close){
+                drops.push_back({t.items[i].from,t.items[i+1].to-t.items[i].from});
+                drops.push_back({t.items[close].from,t.items[close].to-t.items[close].from});
+            }
+        }
         if(t.V(i)!="("||t.V(i+1)!="co_await")continue;
         auto fn=i+2;if(t.V(fn)=="riceOwner"&&(t.V(fn+1)=="."||t.V(fn+1)=="->"))fn+=2;
         if(!Identifier(t.V(fn))||t.V(fn+1)!="(")continue;
@@ -263,21 +279,60 @@ std::string Indent(std::string_view s,std::size_t p) {
     return std::string(s.substr(i,j-i));
 }
 std::string DefaultName(NodeKind kind) {
+    if(kind==NodeKind::Event)return "NewEvent";
     if(kind==NodeKind::Function)return "NewFunction";
     if(kind==NodeKind::Class)return "NewClass";
     return "variable";
 }
+
+constexpr std::pair<std::string_view,std::string_view> signalKinds[]={
+    {"Function","SignalKind::Function"},{"Event","SignalKind::Event"},{"Collision Start","SignalKind::CollisionStart"},
+    {"Collision End","SignalKind::CollisionEnd"},{"Component Change","SignalKind::ComponentChange"},
+    {"Game Seconds","SignalKind::GameSeconds"},{"Seconds","SignalKind::Seconds"}
+};
+bool TimeSource(std::string_view type){return type=="Game Seconds"||type=="Seconds";}
+bool Timed(const ScriptNode& n){return (n.kind==NodeKind::Trigger||n.kind==NodeKind::Timer)&&TimeSource(n.type);}
+
+std::string TriggerDuration(const std::string& argument,std::string_view row,bool inTrigger){
+    auto expression=PlainExpression(argument,inTrigger);
+    CppTokens t(expression);
+    if(t.V(0)=="HasTrigger"&&t.V(1)=="("&&t.V(2)==row&&t.V(3)==")"&&
+       t.V(4)=="?"&&t.V(5)=="0"&&t.V(6)==":"&&t.V(7)=="("&&t.items[7].mate==t.items.size()-1)
+        return t.Slice(8,t.items[7].mate);
+    return expression;
+}
+std::string SignalCode(std::string_view label){
+    for(auto [name,code]:signalKinds)if(name==label)return std::string(code);
+    return {};
+}
+std::string SignalLabel(std::string_view code){
+    for(auto [name,token]:signalKinds)if(code==token)return std::string(name);
+    return {};
+}
+}
+
+std::string SignalKey(const ScriptNode& declaration,std::string_view externalScript){
+    if(!declaration.isPublic)return "private:"+std::to_string(declaration.id);
+    return "public:"+(externalScript.empty()?std::string{}:std::string(externalScript)+"#")+std::to_string(declaration.id);
 }
 
 std::vector<std::string> SplitArguments(std::string_view arguments) {
     return ArgumentList(arguments,false);
 }
 
+std::vector<std::string> SplitParameterDeclarations(std::string_view declarations) {
+    auto parts=ArgumentList(declarations,true);
+    if(parts.size()==1){
+        CppTokens tokens(parts.front());
+        if(tokens.items.size()==1&&tokens.V(0)=="void")return {};
+    }
+    return parts;
+}
+
 std::vector<ScriptParameter> FunctionParameters(std::string_view declarations) {
     std::vector<ScriptParameter> parameters;
-    for(auto& part:ArgumentList(declarations,true)){
+    for(auto& part:SplitParameterDeclarations(declarations)){
         CppTokens t(part);
-        if(t.items.size()==1&&t.V(0)=="void"&&parameters.empty())continue;
         if(t.items.empty())continue;
         std::size_t end=0;
         while(end<t.items.size()&&t.V(end)!="=")end=t.Next(end);
@@ -372,6 +427,12 @@ void AuthoringParser::Run() {
             doc.rootOpen_=t.items[p].to;
             doc.rootClose_=t.items[close].from;
             ScanBody(p+1,close,0,name);
+            for(auto& item:doc.nodes_)if(item.kind==NodeKind::NewClass){
+                const auto storage=doc.VisibleVariableType(item.name,item.id);
+                if(storage.starts_with("std::optional<")&&storage.ends_with('>'))item.type=storage.substr(14,storage.size()-15);
+                if((item.args=="*this"||item.args=="*riceOwner"||item.args=="riceOwner")&&doc.HasImplicitConstructorOwner(item.type))
+                    item.args.clear();
+            }
             return;
         }
     }
@@ -415,7 +476,12 @@ void AuthoringParser::ScanBody(std::size_t at,std::size_t limit,ScriptId parent,
         if(tag=="/*rice:reader*/"){
             doc.readerBegin_=t.items[begin].from;doc.readerEnd_=t.items[stop-1].to;continue;
         }
-        if(tag=="/*rice:finish*/"||tag=="/*rice:budget*/"||tag=="/*rice:setup*/"||tag=="/*rice:owner*/"||tag=="/*rice:default*/")continue;
+        if(tag=="/*rice:owner*/"){
+            const auto owner=doc.Index(parent);
+            if(owner!=missing)doc.ranges_[owner].implicitConstructorOwner=true;
+            continue;
+        }
+        if(tag=="/*rice:finish*/"||tag=="/*rice:budget*/"||tag=="/*rice:setup*/"||tag=="/*rice:default*/")continue;
         const auto originalStart=a;
         if(v(a)=="riceOwner"&&(v(a+1)=="."||v(a+1)=="->"))a+=2;
         ScriptNode n;
@@ -424,6 +490,25 @@ void AuthoringParser::ScanBody(std::size_t at,std::size_t limit,ScriptId parent,
         std::size_t semi=stop;
         if(v(semi-1)==";")--semi;
         auto funcArgs=[&](std::size_t pos){return t.Slice(pos+1,t.items[pos].mate);};
+        auto callStart=a+(v(a)=="co_await");
+        if(v(callStart)=="riceOwner"&&v(callStart+1)=="->")callStart+=2;
+        if((v(callStart)=="WatchTrigger"||v(callStart)=="BlockTrigger")&&v(callStart+1)=="("){
+            auto end=t.items[callStart+1].mate;
+            auto args=t.Args(callStart+2,end);
+            auto body=end;
+            for(auto j=callStart+2;j<end;j=t.Next(j))if(v(j)=="{")body=j;
+            if(args.size()>=5&&body<end){
+                n.kind=NodeKind::Trigger;n.blockOthers=v(callStart)=="BlockTrigger";
+                n.type=SignalLabel(args[1]);n.args=args[3]=="true"?"every":"once";
+                n.value=TimeSource(n.type)?TriggerDuration(args[2],args[0],EnclosingTrigger(doc,parent)!=nullptr):Unquote(args[2]);
+                auto finish=t.items[body].mate;
+                auto childrenEnd=t.items[finish].from;
+                for(auto j=body+1;j<finish;j=t.Next(j))if(v(j)=="/*rice:finish*/"){childrenEnd=t.items[j].from;break;}
+                auto id=Record(n,begin,originalStart,t.items[body].from,t.items[stop-1].to,childrenEnd,true);
+                ScanBody(body+1,finish,id,{});
+                continue;
+            }
+        }
         if(block&&v(a)=="void"&&v(a+1).starts_with("rice_state_")&&v(open+1)=="DefineState"&&v(open+2)=="("){
             auto call=open+2;
             auto params=t.Args(call+1,t.items[call].mate);
@@ -443,12 +528,26 @@ void AuthoringParser::ScanBody(std::size_t at,std::size_t limit,ScriptId parent,
                 continue;
             }
         }
-        if((v(a)=="struct"||v(a)=="class")&&block){
+        if(v(a)=="using"&&Identifier(v(a+1))&&v(a+2)=="="&&v(semi-1)=="EventTag"){
+            n.kind=NodeKind::Event;n.name=v(a+1);n.value.clear();
+        } else if((v(a)=="struct"||v(a)=="class")&&block){
             n.kind=NodeKind::Class;n.name=v(a+1);n.value.clear();
         } else if((v(a)=="if"||v(a)=="else")&&block){
             bool cond=v(a)=="if"||v(a+1)=="if";
             n.kind=v(a)=="if"?NodeKind::Condition:cond?NodeKind::ElseIf:NodeKind::Else;
             n.value=cond?funcArgs(a+(v(a)=="if"?1:2)):std::string{};
+            if(n.kind==NodeKind::Condition&&v(a+2)=="co_await"){
+                auto timer=a+3;
+                if(v(timer)=="riceOwner"&&v(timer+1)=="->")timer+=2;
+                if((v(timer)=="TimerSeconds"||v(timer)=="TimerSignal")&&v(timer+1)=="("&&t.items[timer+1].mate+1==t.items[a+1].mate){
+                    auto args=t.Args(timer+2,t.items[timer+1].mate);
+                    if(args.size()==3){
+                        n.kind=NodeKind::Timer;n.args="once";n.blockOthers=true;
+                        n.type=v(timer)=="TimerSeconds"?(args[1]=="true"?"Game Seconds":"Seconds"):SignalLabel(args[0]);
+                        n.value=v(timer)=="TimerSeconds"?args[0]:Unquote(args[1]);
+                    }
+                }
+            }
         } else if((v(a)=="while"||v(a)=="for")&&block&&v(a+1)=="(") {
             if(v(a)=="while"&&Trim(funcArgs(a+1))=="true"){n.kind=NodeKind::Loop;n.value.clear();}
             else if(v(a)=="for"){
@@ -491,11 +590,13 @@ void AuthoringParser::ScanBody(std::size_t at,std::size_t limit,ScriptId parent,
             if(call){
                 auto args=t.Args(fn+2,t.items[fn+1].mate);
                 if(v(fn)=="Wait"&&(args.size()==1||args.size()==2)){n.kind=NodeKind::Wait;n.value=args[0];}
+                else if(v(fn)=="EmitEvent"&&args.size()==1){n.kind=NodeKind::EmitEvent;n.value=Unquote(args[0]);}
+                else if(v(fn)=="BreakTrigger"&&args.empty()){n.kind=NodeKind::BreakTrigger;n.value.clear();}
                 else if(motionBuiltin&&v(fn)=="Move"&&(args.size()==5||args.size()==6)){
                     for(auto unit:moveUnits)if(args[4]==unit.code){
                         n.kind=NodeKind::Move;n.args=unit.label;
                         n.value=args[0]=="std::nullopt"?"":args[0];
-                        for(size_t axis=0;axis<3;++axis)n.moveCoordinates[axis]=PlainExpression(args[axis+1]);
+                        for(size_t axis=0;axis<3;++axis)n.moveCoordinates[axis]=PlainExpression(args[axis+1],EnclosingTrigger(doc,parent)!=nullptr);
                         break;
                     }
                 }
@@ -504,8 +605,7 @@ void AuthoringParser::ScanBody(std::size_t at,std::size_t limit,ScriptId parent,
                 }
                 else if(v(fn)=="CheckedEmplace"&&!args.empty()&&Identifier(args[0])){
                     n.kind=NodeKind::NewClass;n.name=args[0];n.value.clear();
-                    if(args.size()>1&&args[1]!="*this"&&args[1]!="*riceOwner")n.args=t.Slice(fn+4,t.items[fn+1].mate);
-                    for(const auto& prev:doc.nodes_)if(prev.kind==NodeKind::Variable&&prev.name==n.name&&prev.type.starts_with("std::optional<"))n.type=prev.type.substr(14,prev.type.size()-15);
+                    if(args.size()>1)n.args=t.Slice(fn+4,t.items[fn+1].mate);
                 }
                 else if(v(fn)=="Activate"&&args.size()==3&&v(fn+2).starts_with("\"")){
                     n.kind=NodeKind::Activate;n.name=Unquote(args[0]);n.type=Unquote(args[1]);n.value=args[2];
@@ -520,8 +620,6 @@ void AuthoringParser::ScanBody(std::size_t at,std::size_t limit,ScriptId parent,
                 })){n.kind=NodeKind::Call;n.name=v(fn);n.value.clear();n.args=funcArgs(fn+1);}
             } else if(Identifier(v(a))&&v(a+1)=="."&&v(a+2)=="emplace"&&v(a+3)=="("){
                 n.kind=NodeKind::NewClass;n.name=v(a);n.args=funcArgs(a+3);n.value.clear();
-                if(n.args=="*this"||n.args=="riceOwner"||n.args=="*riceOwner")n.args.clear();
-                for(auto& prev:doc.nodes_)if(prev.kind==NodeKind::Variable&&prev.name==n.name&&prev.type.starts_with("std::optional<"))n.type=prev.type.substr(14,prev.type.size()-15);
             } else if(Identifier(v(a))&&(v(a+1)=="="||v(a+1)=="+="||v(a+1)=="-="||v(a+1)=="*="||v(a+1)=="/=")){
                 n.kind=NodeKind::Change;n.name=v(a);n.args=v(a+1);n.value=t.Slice(a+2,semi);
             } else {
@@ -560,8 +658,9 @@ void AuthoringParser::ScanBody(std::size_t at,std::size_t limit,ScriptId parent,
                 CppTokens expr(n.value);
                 if(expr.items.size()>=3&&expr.items[1].mate==expr.items.size()-1)n.value=expr.Slice(2,expr.items.size()-1);
             }
-            n.value=PlainExpression(n.value);
-            if(n.kind==NodeKind::Call||n.kind==NodeKind::NewClass)n.args=PlainExpression(n.args);
+            const bool inTrigger=EnclosingTrigger(doc,parent)!=nullptr;
+            n.value=PlainExpression(n.value,inTrigger);
+            if(n.kind==NodeKind::Call||n.kind==NodeKind::NewClass)n.args=PlainExpression(n.args,inTrigger);
         }
         bool hasBody=block&&Owner(n.kind);
         auto childrenEnd=hasBody?t.items[close].from:t.items[stop-1].to;
@@ -590,6 +689,22 @@ namespace {
 std::string Type(const ScriptNode& n){return n.type.empty()?"void":n.type;}
 std::string Header(const ScriptNode& n,const ScriptNode* parent,std::string_view rootName={}) {
     switch(n.kind){
+    case NodeKind::Trigger:{
+        const bool every=n.args=="every";
+        auto id=std::to_string(n.id)+"ULL";
+        // An Every Frame visit may encounter this registration again while it is armed.
+        // Evaluate the duration (including coroutine calls) only on its first visit.
+        auto source=TimeSource(n.type)?"HasTrigger("+id+") ? 0 : ("+n.value+")":Quote(n.value);
+        return std::string(n.blockOthers?"co_await BlockTrigger(":"WatchTrigger(")+id+", "+
+            SignalCode(n.type)+", "+source+", "+(every?"true":"false")+", "+
+            (n.blockOthers&&!every?"[&]()":"[=, this]() mutable")+(n.blockOthers?"":" -> Task<>");
+    }
+    case NodeKind::Timer:{
+        auto id=std::to_string(n.id)+"ULL";
+        if(TimeSource(n.type))
+            return "if (co_await TimerSeconds("+n.value+", "+(n.type=="Game Seconds"?"true":"false")+", "+id+"))";
+        return "if (co_await TimerSignal("+SignalCode(n.type)+", "+Quote(n.value)+", "+id+"))";
+    }
     case NodeKind::Class:return "struct "+n.name;
     case NodeKind::State:return "void rice_state_"+std::to_string(n.id)+"()";
     case NodeKind::OnCreate:return parent?parent->name+(rootName.empty()?"()":"("+std::string(rootName)+"& riceSource) : riceOwner(&riceSource)"):"";
@@ -611,6 +726,9 @@ std::string Header(const ScriptNode& n,const ScriptNode* parent,std::string_view
 }
 std::string Statement(const ScriptNode& n) {
     switch(n.kind){
+    case NodeKind::Event:return "using "+n.name+" = ::Rice::Scripting::EventTag;";
+    case NodeKind::EmitEvent:return "EmitEvent("+Quote(n.value)+");";
+    case NodeKind::BreakTrigger:return "BreakTrigger();";
     case NodeKind::Variable:
         if(n.riceCon)return "Routed<"+n.type+"> "+n.name+"{*this, {"+Quote(std::to_string(n.id))+", "+Quote(n.name)+", "+Quote(n.riceScope)+", "+Quote(n.riceLife)+", "+Quote(n.riceAccess)+", "+Quote(n.policy)+"}, "+(n.value.empty()?n.type+"{}":n.value)+"};";
         return n.type+" "+n.name+(n.value.empty()?"{}":" = "+n.value)+";";
@@ -645,9 +763,11 @@ std::string BuildItem(const ScriptNode& n,const ScriptNode* parent,const std::st
     if(n.kind==NodeKind::Class)out+=inner+"/*rice:owner*/ "+rootName+"* riceOwner = nullptr;\n"+inner+DefaultCtor(n.name,rootName)+"\n"+inner+"/*rice:traits*/ /*rice:endtraits*/\n";
     if(n.kind==NodeKind::OnDestroy&&!rootName.empty())out+=inner+"riceOwner->SafeDestroy([&](){\n"+inner+"});\n";
     if(n.kind==NodeKind::Loop)out+=inner+"/*rice:budget*/ co_await Checkpoint();\n";
+    if(n.kind==NodeKind::Trigger)out+=inner+"/*rice:finish*/ "+(n.blockOthers?"return;":"co_return;")+"\n";
     if(Returning(n.kind)&&n.coroutine&&Type(n)=="void")out+=inner+"/*rice:finish*/ co_return;\n";
     if(n.kind==NodeKind::State)out+=inner+"DefineState("+Quote(n.name)+", "+Quote(n.value)+", [this](){\n"+inner+"}, [this](){\n"+inner+"}, [this](){\n"+inner+"});\n";
     out+=pad+"}";
+    if(n.kind==NodeKind::Trigger)out+=");";
     if(n.kind==NodeKind::Class||(n.kind==NodeKind::Function&&parent&&parent->kind!=NodeKind::Class))out+=";";
     return out;
 }
@@ -696,6 +816,47 @@ void ScriptDocument::SetSource(std::string source) {
 std::size_t ScriptDocument::Index(ScriptId id) const {
     auto it=std::find_if(nodes_.begin(),nodes_.end(),[&](const auto& n){return n.id==id;});
     return it==nodes_.end()?missing:static_cast<std::size_t>(it-nodes_.begin());
+}
+std::string ScriptDocument::InstrumentedSource(std::string_view scriptKey) const{
+    // Keep compiler glue out of the editable file and preserve its line numbers.
+    struct Edit {size_t at,length;std::string text;};
+    std::vector<Edit> edits;
+    std::set<ScriptId> guardedClasses;
+    for(size_t i=0;i<nodes_.size();++i){
+        const auto& n=nodes_[i];
+        const auto& r=ranges_[i];
+        if(n.kind==NodeKind::Function){
+            edits.push_back({r.headerEnd+1,0," ::Rice::Scripting::SignalCurrentFunction("+Quote(SignalKey(n,scriptKey))+"); "});
+        }
+        if(n.kind!=NodeKind::Trigger&&n.kind!=NodeKind::Timer&&n.kind!=NodeKind::EmitEvent)continue;
+        if(n.value.starts_with("public:")&&n.value.find('#')==missing){
+            const auto literal=Quote(n.value);
+            auto at=source_.find(literal,r.code);
+            if(at<r.headerEnd)edits.push_back({at,literal.size(),Quote("public:"+std::string(scriptKey)+"#"+n.value.substr(7))});
+        }
+        if(n.kind==NodeKind::Trigger){
+            for(auto* p=Get(n.parent);p;p=Get(p->parent))if(p->kind==NodeKind::Class){
+                const auto member="rice_trigger_lifetime_"+std::to_string(p->id);
+                if(guardedClasses.insert(p->id).second)
+                    edits.push_back({ranges_[Index(p->id)].childrenEnd,0," ::Rice::Scripting::TriggerLifetime "+member+"; "});
+                auto close=source_.rfind(')',r.end-1);
+                if(close!=missing&&close>r.childrenEnd)edits.push_back({close,0,", "+member+".Token()"});
+                if(TimeSource(n.type)){
+                    CppTokens header(std::string_view(source_).substr(r.code,r.headerEnd-r.code));
+                    for(size_t j=0;j<header.items.size();++j)
+                        if(header.V(j)=="HasTrigger"&&header.V(j+1)=="("&&header.V(j+3)==")"&&header.V(j+4)=="?"){
+                            edits.push_back({r.code+header.items[j+3].from,0,", "+member+".Token()"});
+                            break;
+                        }
+                }
+                break;
+            }
+        }
+    }
+    std::sort(edits.begin(),edits.end(),[](const Edit& a,const Edit& b){return a.at>b.at;});
+    auto result=source_;
+    for(const auto& e:edits)result.replace(e.at,e.length,e.text);
+    return result;
 }
 bool ScriptDocument::HasModuleEntry() const {
     CppTokens t(source_);
@@ -814,7 +975,7 @@ bool ScriptDocument::Within(ScriptId node,ScriptId owner) const {
 }
 bool ScriptDocument::CanSee(ScriptId symbol,ScriptId owner) const {
     auto* decl=Get(symbol);
-    return decl&&Decl(decl->kind)&&Within(owner,decl->parent);
+    return decl&&Decl(decl->kind)&&(Within(owner,decl->parent)||(decl->kind==NodeKind::Event&&decl->isPublic));
 }
 namespace {
 struct VisibleSymbol {
@@ -852,6 +1013,11 @@ std::string ScriptDocument::VisibleVariableType(std::string_view name,ScriptId o
     auto symbol=ResolveVisibleSymbol(*this,name,owner,preferred);
     return symbol.node&&symbol.node->kind==NodeKind::Variable?symbol.node->type:symbol.parameterType;
 }
+bool ScriptDocument::HasImplicitConstructorOwner(std::string_view className) const{
+    for(std::size_t i=0;i<nodes_.size();++i)
+        if(nodes_[i].kind==NodeKind::Class&&nodes_[i].name==className)return ranges_[i].implicitConstructorOwner;
+    return false;
+}
 void ScriptDocument::TrackReferences(ScriptNode& n) const{
     auto fields=References(n);
     auto used=[&](std::string_view name){
@@ -865,13 +1031,16 @@ void ScriptDocument::TrackReferences(ScriptNode& n) const{
 }
 bool ScriptDocument::CanAwait(ScriptId owner) const {
     for(auto* n=Get(owner);n;n=Get(n->parent)){
+        if(n->kind==NodeKind::Trigger)return !n->blockOthers;
         if(Returning(n->kind))return n->coroutine;
         if(StateCallback(n->kind)||Callback(n->kind)||n->kind==NodeKind::Class)return false;
     }
     return false;
 }
 std::string ScriptDocument::AwaitCalls(std::string text, ScriptId owner) const {
-    if(!CanAwait(owner))return text;
+    auto* trigger=EnclosingTrigger(*this,owner);
+    const bool synchronousTrigger=trigger&&trigger->blockOthers;
+    if(!synchronousTrigger&&!CanAwait(owner))return text;
     CppTokens t(text);
     std::vector<std::pair<std::size_t,std::string>> insertions;
     for(std::size_t i=0;i+1<t.items.size();++i){
@@ -879,7 +1048,8 @@ std::string ScriptDocument::AwaitCalls(std::string text, ScriptId owner) const {
         if(i&&(t.V(i-1)=="co_await"||t.V(i-1)=="."||t.V(i-1)=="::"||t.V(i-1)=="->"))continue;
         auto* fn=FindVisibleFunction(t.V(i),owner);
         if(!fn||!fn->coroutine)continue;
-        insertions.push_back({t.items[i].from,"(co_await "});
+        if(i>=2&&t.V(i-2)=="RunNow"&&t.V(i-1)=="(")continue;
+        insertions.push_back({t.items[i].from,synchronousTrigger?"RunNow(":"(co_await "});
         insertions.push_back({t.items[t.items[i+1].mate].to,")"});
     }
     std::sort(insertions.rbegin(),insertions.rend());
@@ -888,6 +1058,7 @@ std::string ScriptDocument::AwaitCalls(std::string text, ScriptId owner) const {
 }
 bool ScriptDocument::Synchronous(ScriptId owner) const{
     for(auto* n=Get(owner);n;n=Get(n->parent)){
+        if(n->kind==NodeKind::Trigger)return n->blockOthers;
         if(Returning(n->kind))return !n->coroutine;
         if(Callback(n->kind)||StateCallback(n->kind))return true;
     }
@@ -899,7 +1070,8 @@ std::string ScriptDocument::BindOwner(const std::string& text,ScriptId owner) co
         if(n->kind==NodeKind::Class){inClass=Text(n->id).find("/*rice:owner*/")!=missing;break;}
     if(!inClass)return text;
     static const std::unordered_set<std::string_view> sdk{
-        "Activate","Active","ReadChild","Wait","Checkpoint","SetState","ChangeState","State","Physics","DeltaTime","RunNow"
+        "Activate","Active","ReadChild","Wait","Checkpoint","SetState","ChangeState","State","Physics","DeltaTime","RunNow",
+        "WatchTrigger","BlockTrigger","HasTrigger","TimerSeconds","TimerSignal","BreakTrigger","EmitEvent"
     };
     CppTokens t(text);auto out=text;
     for(auto i=t.items.size();i>0;--i){
@@ -928,6 +1100,7 @@ bool ScriptDocument::ValueType(std::string_view type,std::vector<ScriptId>& visi
         if(std::find(visiting.begin(),visiting.end(),cls->id)!=visiting.end())return false;
         visiting.push_back(cls->id);
         for(const auto& member:nodes_)if(member.parent==cls->id){
+            if(member.kind==NodeKind::Event)continue;
             if(member.kind!=NodeKind::Variable||member.riceCon||!ValueType(member.type,visiting))return false;
         }
         visiting.pop_back();
@@ -1013,12 +1186,9 @@ bool ScriptDocument::Insert(ScriptNode n,std::string text){
     auto loc=OnlyIndentFrom(source_,end);
     if(text.empty()){
         TrackReferences(n);
-        if(n.kind==NodeKind::NewClass){
-            auto variable=std::find_if(nodes_.begin(),nodes_.end(),[&](const auto& x){return x.kind==NodeKind::Class&&x.name==n.type;});
-            if(variable!=nodes_.end()&&Text(variable->id).find("/*rice:owner*/")!=missing){
-                bool memberContext=false;for(auto* context=parent;context;context=Get(context->parent))if(context->kind==NodeKind::Class)memberContext=true;
-                n.args=memberContext?"*riceOwner":"*this";
-            }
+        if(n.kind==NodeKind::NewClass&&HasImplicitConstructorOwner(n.type)){
+            bool memberContext=false;for(auto* context=parent;context;context=Get(context->parent))if(context->kind==NodeKind::Class)memberContext=true;
+            n.args=memberContext?"*riceOwner":"*this";
         }
         auto useOwner=(n.kind!=NodeKind::OnCreate&&n.kind!=NodeKind::OnDestroy)||!parent||Text(parent->id).find("/*rice:owner*/")!=missing;
         text=BuildItem(n,parent,pad,useOwner?rootName_:std::string{});
@@ -1046,7 +1216,7 @@ ScriptId ScriptDocument::Add(ScriptId parent,NodeKind kind,std::string name) {
         return AddBranch(parent,kind);
     if((kind==NodeKind::OnCreate||kind==NodeKind::OnDestroy)&&(!Get(parent)||Get(parent)->kind!=NodeKind::Class))return 0;
     for(auto& n:nodes_)if(n.parent==parent&&n.kind==kind&&(Callback(kind)||StateCallback(kind)))return n.id;
-    if(StateCallback(kind))return 0;
+    if(StateCallback(kind)||kind==NodeKind::Timer)return 0;
     ScriptNode n;n.id=FreshId();n.parent=parent;n.kind=kind;n.name=std::move(name);
     if(Decl(kind)&&n.name.empty()){
         std::string base=DefaultName(kind);n.name=base;
@@ -1058,6 +1228,8 @@ ScriptId ScriptDocument::Add(ScriptId parent,NodeKind kind,std::string name) {
         return nullptr;
     };
     switch(kind){
+    case NodeKind::Trigger:n.type="Collision Start";n.args="once";break;
+    case NodeKind::EmitEvent:if(auto* event=visible(NodeKind::Event))n.value=SignalKey(*event);break;
     case NodeKind::Variable:n.type="int";n.value="0";break;
     case NodeKind::Function:n.type="void";break;
     case NodeKind::Condition:case NodeKind::ElseIf:n.value="true";break;
@@ -1170,6 +1342,7 @@ bool ScriptDocument::Edit(ScriptId id,const ScriptNode& next){
     if(n.kind==NodeKind::Change||n.kind==NodeKind::Condition||n.kind==NodeKind::ElseIf||n.kind==NodeKind::EndFunction||n.kind==NodeKind::Wait||n.kind==NodeKind::Move||n.kind==NodeKind::Activate)
         n.value=AwaitCalls(n.value,n.parent);
     if(n.kind==NodeKind::Move)for(auto& coordinate:n.moveCoordinates)coordinate=AwaitCalls(coordinate,n.parent);
+    if(Timed(n))n.value=AwaitCalls(n.value,n.parent);
     if(n.kind==NodeKind::Call||n.kind==NodeKind::NewClass)n.args=AwaitCalls(n.args,n.parent);
     if(n.kind==NodeKind::Change&&(n.args.empty()||n.args=="="))
         for(const auto& field:nodes_)if(field.kind==NodeKind::Variable&&field.name==n.name&&field.type=="int"&&CanSee(field.id,n.parent)&&!n.value.empty()){
@@ -1188,7 +1361,12 @@ bool ScriptDocument::Edit(ScriptId id,const ScriptNode& next){
     else if(r.block){
         bool useOwner=n.kind!=NodeKind::OnCreate||Text(n.parent).find("/*rice:owner*/")!=missing;
         auto head=Header(n,Get(n.parent),useOwner?rootName_:std::string{});if(head.empty())return false;
-        if(Branch(n.kind)||n.kind==NodeKind::Loop)head=BindOwner(head,n.parent);
+        if(Branch(n.kind)||n.kind==NodeKind::Loop||n.kind==NodeKind::Trigger||n.kind==NodeKind::Timer)head=BindOwner(head,n.parent);
+        if(n.kind==NodeKind::Trigger&&n.blockOthers!=old.blockOthers){
+            constexpr std::string_view finish="/*rice:finish*/ ";
+            if(s.compare(r.childrenEnd,finish.size(),finish)==0)
+                s.replace(r.childrenEnd+finish.size(),old.blockOthers?7:10,n.blockOthers?"return;":"co_return;");
+        }
         if(n.kind==NodeKind::Function&&n.coroutine&&Type(n)!=Type(old)){
             auto before=s.find("/*rice:finish*/",r.headerEnd);
             if(before!=missing&&before<r.end&&Type(n)!="void")s.erase(before,std::string_view("/*rice:finish*/ co_return;").size());
@@ -1196,12 +1374,9 @@ bool ScriptDocument::Edit(ScriptId id,const ScriptNode& next){
         }
         s.replace(r.begin,r.headerEnd-r.begin,Mark(n)+head+" ");
     } else{
-        if(n.kind==NodeKind::NewClass){
-            auto klass=std::find_if(nodes_.begin(),nodes_.end(),[&](const auto& c){return c.kind==NodeKind::Class&&c.name==n.type;});
-            if(klass!=nodes_.end()&&n.args.empty()&&Text(klass->id).find("/*rice:owner*/")!=missing){
-                bool member=false;for(auto* context=Get(n.parent);context;context=Get(context->parent))if(context->kind==NodeKind::Class)member=true;
-                n.args=member?"*riceOwner":"*this";
-            }
+        if(n.kind==NodeKind::NewClass&&n.args.empty()&&HasImplicitConstructorOwner(n.type)){
+            bool member=false;for(auto* context=Get(n.parent);context;context=Get(context->parent))if(context->kind==NodeKind::Class)member=true;
+            n.args=member?"*riceOwner":"*this";
         }
         std::string code=Statement(n);
         if(n.kind==NodeKind::Call){
@@ -1239,7 +1414,32 @@ bool ScriptDocument::Edit(ScriptId id,const ScriptNode& next){
         return true;
     }
     *this=std::move(rebuilt);
-    if(Decl(n.kind)&&Identifier(n.name)&&Identifier(old.name)&&old.name!=n.name){
+    if(n.kind==NodeKind::Trigger&&n.blockOthers!=old.blockOthers){
+        // Re-emit calls and expressions in this handler using its new calling convention.
+        // A nested function or trigger keeps its own calling convention.
+        std::vector<ScriptId> children;
+        for(const auto& child:nodes_){
+            auto* owner=EnclosingTrigger(*this,child.parent);
+            if(owner&&owner->id==id&&(child.kind==NodeKind::Call||child.kind==NodeKind::EndFunction||
+               child.kind==NodeKind::Change||child.kind==NodeKind::Condition||child.kind==NodeKind::ElseIf||
+               child.kind==NodeKind::Variable||child.kind==NodeKind::NewClass||child.kind==NodeKind::Move||
+               child.kind==NodeKind::Activate||Timed(child)))children.push_back(child.id);
+        }
+        for(auto child:children)if(auto* row=Get(child)){auto copy=*row;Edit(child,copy);}
+    }
+    if((n.kind==NodeKind::Function||n.kind==NodeKind::Event)&&n.isPublic!=old.isPublic){
+        auto cpp=source_;
+        for(size_t j=nodes_.size();j>0;--j){
+            const auto& use=nodes_[j-1];
+            if((use.kind!=NodeKind::EmitEvent&&use.kind!=NodeKind::Trigger&&use.kind!=NodeKind::Timer)||use.value!=SignalKey(old))continue;
+            const auto& range=ranges_[j-1];
+            const auto literal=Quote(use.value);
+            auto at=source_.find(literal,range.code);
+            if(at<range.headerEnd)cpp.replace(at,literal.size(),Quote(SignalKey(n)));
+        }
+        if(cpp!=source_)SetSource(std::move(cpp));
+    }
+    if(Decl(n.kind)&&n.kind!=NodeKind::Event&&Identifier(n.name)&&Identifier(old.name)&&old.name!=n.name){
         // Names are unique within a script. Rename identifier tokens in this
         // declaration's lexical region while preserving comments and literals.
         auto owner=Index(n.parent);
@@ -1344,6 +1544,9 @@ std::vector<std::string_view> References(const ScriptNode& n){
     switch(n.kind){
     case NodeKind::Variable:return {n.type,n.value};
     case NodeKind::Function:return {n.type,n.args};
+    case NodeKind::Timer:case NodeKind::Trigger:
+        if(TimeSource(n.type))return {n.value};
+        return {};
     case NodeKind::Change:if(n.name==GameSpeedTarget)return {n.value}; [[fallthrough]];
     case NodeKind::NewClass:return {n.name,n.value,n.args,n.type};
     case NodeKind::Call:return {n.name,n.args};
@@ -1368,6 +1571,9 @@ std::vector<ScriptId> ScriptDocument::Instances(ScriptId symbol,ScriptId window)
     if(!declared||!Decl(declared->kind))return found;
     for(const auto& n:nodes_){
         if(n.id==symbol||!Within(n.id,window)||!CanSee(symbol,n.parent))continue;
+        if((n.kind==NodeKind::EmitEvent||n.kind==NodeKind::Trigger||n.kind==NodeKind::Timer)&&n.value==SignalKey(*declared)){
+            found.push_back(n.id);continue;
+        }
         if(auto ref=n.references.find(declared->name);ref!=n.references.end()&&ref->second!=symbol)continue;
         for(auto text:References(n))if(HasToken(text,declared->name)){
             found.push_back(n.id);break;
@@ -1388,10 +1594,36 @@ std::vector<ScriptDiagnostic> ScriptDocument::Validate(const std::vector<std::st
         }
         if(Decl(n.kind)){
             if(!Identifier(n.name)||Keyword(n.name))error("Invalid C++ identifier: "+n.name);
-            auto [it,added]=names.emplace(n.name,n.id);
-            if(!added){error("Duplicate declaration: "+n.name);
-                if(const auto* first=Get(it->second))result.push_back({first->id,first->line,false,"Duplicate declaration: "+first->name});}
+            if(n.kind==NodeKind::Event){
+                for(const auto& other:nodes_)if(other.id!=n.id&&other.parent==n.parent&&Decl(other.kind)&&other.name==n.name){
+                    error("Duplicate declaration: "+n.name);break;
+                }
+            }else{
+                auto [it,added]=names.emplace(n.name,n.id);
+                if(!added){error("Duplicate declaration: "+n.name);
+                    if(const auto* first=Get(it->second))result.push_back({first->id,first->line,false,"Duplicate declaration: "+first->name});}
+            }
         }
+        if(n.kind==NodeKind::Trigger){
+            if(SignalCode(n.type).empty())error("Choose a trigger source.");
+            if(n.args!="once"&&n.args!="every")error("Choose single or every.");
+            if(n.blockOthers&&!CanAwait(n.parent))error("A blocking Trigger requires a coroutine.");
+        }
+        if(n.kind==NodeKind::Timer){
+            if(!CanAwait(n.parent))error("An inline wait requires a coroutine.");
+            if(!TimeSource(n.type)&&n.type!="Function"&&n.type!="Event")error("Choose a trigger source.");
+        }
+        if(n.kind==NodeKind::EmitEvent||((n.kind==NodeKind::Trigger||n.kind==NodeKind::Timer)&&(n.type=="Event"||n.type=="Function"))){
+            const bool localPublic=n.value.starts_with("public:");
+            if(!localPublic||n.value.find('#')==missing){
+                auto targetKind=n.type=="Function"?NodeKind::Function:NodeKind::Event;
+                bool found=std::any_of(nodes_.begin(),nodes_.end(),[&](const auto& declaration){
+                    return declaration.kind==targetKind&&SignalKey(declaration)==n.value&&CanSee(declaration.id,n.parent);
+                });
+                if(!found)error("Choose a visible "+std::string(targetKind==NodeKind::Event?"event.":"function."));
+            }
+        }
+        if(n.kind==NodeKind::BreakTrigger&&!EnclosingTrigger(*this,n.parent))error("Break Trigger requires an enclosing Trigger.");
         if(n.kind==NodeKind::Variable){
             if(n.type.empty()||n.type=="void")error("Choose a variable type.");
             if(n.riceCon){
@@ -1404,7 +1636,7 @@ std::vector<ScriptDiagnostic> ScriptDocument::Validate(const std::vector<std::st
         if(n.kind==NodeKind::Function&&Instances(n.id).empty()&&
             std::none_of(otherSources.begin(),otherSources.end(),[&](auto src){return HasToken(src,n.name);}))
             result.push_back({n.id,n.line,true,"No uses found for function '"+n.name+"'."});
-        if(n.kind==NodeKind::Wait){
+        if(n.kind==NodeKind::Wait||Timed(n)){
             if(n.value.empty())error("Choose a wait duration.");
             else{
                 double seconds=0;auto end=n.value.data()+n.value.size();
@@ -1429,7 +1661,7 @@ std::vector<ScriptDiagnostic> ScriptDocument::Validate(const std::vector<std::st
             bool inLoop=false;
             for(auto* parent=Get(n.parent);parent;parent=Get(parent->parent)){
                 if(parent->kind==NodeKind::Loop){inLoop=true;break;}
-                if(Returning(parent->kind))break;
+                if(Returning(parent->kind)||parent->kind==NodeKind::Trigger)break;
             }
             if(!inLoop)error("End Loop requires an enclosing loop.");
         }
@@ -1440,21 +1672,30 @@ std::vector<ScriptDiagnostic> ScriptDocument::Validate(const std::vector<std::st
     while(changed){
         changed=false;
         for(const auto& n:nodes_){
-            bool suspend=n.kind==NodeKind::Wait||n.kind==NodeKind::Loop||(n.kind==NodeKind::Custom&&MaySuspend(n.value));
+            bool suspend=n.kind==NodeKind::Wait||n.kind==NodeKind::Loop||n.kind==NodeKind::Timer||
+                (n.kind==NodeKind::Trigger&&n.blockOthers)||(n.kind==NodeKind::Custom&&MaySuspend(n.value));
             if(!suspend)for(const auto& fn:nodes_)if(suspending.contains(fn.id)&&fn.kind==NodeKind::Function){
                 for(auto text:References(n))if(HasToken(text,fn.name)){suspend=true;break;}
                 if(suspend)break;
             }
             if(!suspend)continue;
             for(auto* owner=Get(n.parent);owner;owner=Get(owner->parent)){
+                if(owner->kind==NodeKind::Trigger){
+                    if(owner->blockOthers)suspending.insert(owner->id);
+                    break;
+                }
                 if(owner->kind==NodeKind::Function||Callback(owner->kind)||StateCallback(owner->kind)){
                     changed|=suspending.insert(owner->id).second;break;
                 }
             }
         }
     }
-    for(auto id:suspending){const auto* fn=Get(id);if(fn&&(fn->kind==NodeKind::OnCreate||fn->kind==NodeKind::OnDestroy))
-        result.push_back({id,fn->line,false,"Creation and destruction callbacks must complete synchronously."});}
+    for(auto id:suspending){
+        const auto* fn=Get(id);
+        if(fn&&fn->kind==NodeKind::Trigger)result.push_back({id,fn->line,false,"A synchronous Trigger body cannot suspend."});
+        if(fn&&(fn->kind==NodeKind::OnCreate||fn->kind==NodeKind::OnDestroy))
+            result.push_back({id,fn->line,false,"Creation and destruction callbacks must complete synchronously."});
+    }
     return result;
 }
 

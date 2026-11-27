@@ -654,8 +654,18 @@ static void ShapeViewportTests(){
 }
 static void InteractionTests(const fs::path& screenshot){
     Fixture f;Check(f.panel.CanvasSize().x>200&&f.panel.CanvasSize().y>200,"Shape Editor provides a usable viewport");
-    Check(!f.panel.VertexListOpen()&&f.rowCenters.empty(),"Vertex UI is hidden until opened from Edit");
-    auto fullWidth=f.panel.CanvasSize().x;f.EditMenu();Check(f.panel.CanvasSize().x<fullWidth-200,"Opening vertex UI makes room beside the viewport");
+    Check(!f.panel.VertexListOpen()&&f.rowCenters.empty(),"Vertex list starts closed");
+    const float fullWidth=f.panel.CanvasSize().x;
+    auto* window=ImGui::FindWindowByName("Shape Editor");
+    auto toolbar=window->DC.CursorStartPos;
+    const auto& style=ImGui::GetStyle();
+    for(auto label:{"Save","Load","General","Triangles"})
+        toolbar.x+=ImGui::CalcTextSize(label).x+2*style.FramePadding.x+style.ItemSpacing.x;
+    const ImVec2 vertexEditButton{toolbar.x+style.FramePadding.x+ImGui::CalcTextSize("Vertex Edit").x*.5f,toolbar.y+ImGui::GetFrameHeight()*.5f};
+    f.Frame(vertexEditButton);
+    Check(ImGui::GetCurrentContext()->HoveredId==window->GetID("Vertex Edit"),"The toolbar exposes the Vertex Edit button");
+    f.Click(vertexEditButton);f.Frame();
+    Check(f.panel.VertexListOpen()&&f.panel.CanvasSize().x<fullWidth-200,"Vertex Edit opens the vertex list beside the viewport");
     auto original=f.Mesh().custom.positions;
     f.Click(Fixture::Point(f.Project(0)));Check(f.panel.Selection().active==0,"Canvas click activates a vertex cube");
     f.Click(Fixture::Point(f.Project(1)),true);Check(f.panel.Selection().selected.size()==2,"Canvas Shift click adds to selection");
@@ -683,7 +693,14 @@ static void InteractionTests(const fs::path& screenshot){
     f.Screenshot(screenshot.empty()?fs::path{}:screenshot.parent_path()/"ShapeEditor-cube.bmp");
     auto numericStart=f.Mesh().custom.positions;auto coord=f.coordinateCenters[0];f.Frame(coord);f.Frame(coord,true);f.Frame({coord.x+35,coord.y},true);f.Frame({coord.x+35,coord.y});
     Check(f.panel.Selection().active==0&&f.Mesh().custom.positions!=numericStart,"Editing a coordinate activates its cube and modifies geometry");
-    f.panel.Draft().Undo();f.Frame();Check(f.Mesh().custom.positions==numericStart,"Coordinate drag creates one undo action");
+    const auto edited=f.Mesh().custom.positions;
+    const auto selectedAfterEdit=f.panel.Selection().selected;
+    f.Click(vertexEditButton);f.Frame();
+    Check(!f.panel.VertexListOpen()&&f.rowCenters.empty()&&f.panel.CanvasSize().x==fullWidth,"Clicking Vertex Edit again closes the vertex list");
+    f.Click(vertexEditButton);f.Frame();
+    Check(f.panel.VertexListOpen()&&f.rowCenters.size()==8&&f.panel.Selection().active==0&&f.panel.Selection().selected==selectedAfterEdit&&f.Mesh().custom.positions==edited,
+          "Reopening Vertex Edit preserves the selection, active vertex and edited coordinates");
+    f.Key(ImGuiKey_Z);Check(f.Mesh().custom.positions==numericStart,"One Ctrl+Z undoes the coordinate edit after reopening Vertex Edit");
     auto origin=f.panel.CanvasOrigin(),size=f.panel.CanvasSize();f.Frame(Fixture::Point(origin+Vector2(2)),false,false,true);f.Frame(Fixture::Point(origin+Vector2(2)),true,false,true);
     f.Frame(Fixture::Point(origin+size-Vector2(2)),true,false,true);f.Frame(Fixture::Point(origin+size-Vector2(2)),false,false,true);
     Check(!f.panel.Selection().selected.empty()&&f.panel.Selection().selected.size()<8,"Ctrl drag selects visible vertices and excludes occluded vertices");

@@ -63,6 +63,148 @@ template<class T=int> T Read(Workspace& workspace, EntityID id, const char* name
 }
 void Tick(Workspace& workspace) { workspace.Update(.05f,true); }
 
+void CheckCrossScriptSignals(const fs::path& root) {
+    using namespace Scripting;
+    Workspace workspace(root,true);
+    auto source=ScriptDocument::New(), listener=ScriptDocument::New();
+    auto hook=[](const ScriptDocument& doc,NodeKind kind){
+        for(const auto& node:doc.Nodes())if(node.kind==kind)return node.id;
+        throw std::runtime_error("Missing lifecycle hook");
+    };
+    const auto event=source.Add(0,NodeKind::Event,"pulse");
+    const auto function=source.Add(0,NodeKind::Function,"SendPulse");
+    for(auto id:{event,function}){
+        auto row=*source.Get(id);
+        row.isPublic=true;
+        Check(source.Edit(id,row),"Could not publish the signal declaration");
+    }
+    auto emit=*source.Get(source.Add(function,NodeKind::EmitEvent));
+    emit.value=SignalKey(*source.Get(event));
+    Check(source.Edit(emit.id,emit),"Could not set the event source");
+    source.Add(hook(source,NodeKind::Update),NodeKind::Call,"SendPulse");
+    const fs::path senderPath="Scripts/SignalSource.cpp";
+    const auto senderKey=ScriptKey(root,senderPath);
+    workspace.SaveScript(senderPath,source.Source());
+
+    const auto start=hook(listener,NodeKind::Start);
+    const auto update=hook(listener,NodeKind::Update);
+    auto observe=[&](ScriptId parent,const std::string& type,const std::string& value,const char* counter,const char* repeat,bool block){
+        listener.Add(0,NodeKind::Variable,counter);
+        auto id=listener.Add(parent,NodeKind::Trigger);
+        auto row=*listener.Get(id);
+        row.type=type;row.value=value;row.args=repeat;row.blockOthers=block;
+        Check(listener.Edit(id,row),"Could not choose a trigger source");
+        auto add=*listener.Get(listener.Add(id,NodeKind::Change,counter));
+        add.value=std::string(counter)+" + 1";
+        Check(listener.Edit(add.id,add),"Could not edit the signal handler");
+        return id;
+    };
+    auto speed=*listener.Get(listener.Add(start,NodeKind::Change,"Game Speed"));
+    speed.value="0.5f";listener.Edit(speed.id,speed);
+    auto interval=*listener.Get(listener.Add(0,NodeKind::Variable,"period"));
+    interval.type="float";interval.value="0.125f";listener.Edit(interval.id,interval);
+    listener.Add(0,NodeKind::Variable,"samples");
+    auto sample=*listener.Get(listener.Add(0,NodeKind::Function,"SamplePeriod"));
+    sample.type="float";listener.Edit(sample.id,sample);
+    auto countSample=*listener.Get(listener.Add(sample.id,NodeKind::Change,"samples"));
+    countSample.value="samples + 1";listener.Edit(countSample.id,countSample);
+    auto result=*listener.Get(listener.Add(sample.id,NodeKind::EndFunction));
+    result.value="period";listener.Edit(result.id,result);
+    const auto eventKey=SignalKey(*source.Get(event),senderKey);
+    const auto once=observe(start,"Event",eventKey,"singles","once",false);
+    observe(start,"Event",eventKey,"repeats","every",false);
+    auto stopped=observe(start,"Event",eventKey,"stopped","every",false);
+    Check(listener.Add(stopped,NodeKind::BreakTrigger)!=0,"Could not add a trigger break");
+    observe(start,"Game Seconds","period","gameTicks","every",false);
+    observe(start,"Seconds","period","realTicks","every",false);
+    observe(start,"Function",SignalKey(*source.Get(function),senderKey),"functionSeen","once",false);
+    observe(start,"Seconds","period","unlocked","once",true);
+    observe(update,"Seconds","SamplePeriod()","sampled","once",false);
+    observe(update,"Event",eventKey,"blocks","once",true);
+    listener.Add(0,NodeKind::Variable,"updates");
+    auto after=*listener.Get(listener.Add(update,NodeKind::Change,"updates"));
+    after.value="updates + 1";listener.Edit(after.id,after);
+    workspace.SaveScript("Scripts/Listener.cpp",listener.Source());
+    auto invalid=listener;
+    auto wrongKind=*invalid.Get(once);
+    wrongKind.value=SignalKey(*source.Get(function),senderKey);
+    Check(invalid.Edit(once,wrongKind),"Could not set up the stale external reference");
+    bool rejected=false;
+    try { workspace.SaveScript("Scripts/Listener.cpp",invalid.Source()); }
+    catch(const std::runtime_error& error){ rejected=std::string_view(error.what()).find("Selected public signal")!=std::string_view::npos; }
+    Check(rejected&&ReadFile(root/"Scripts/Listener.cpp")==listener.Source(),"An invalid external event replaced the saved script");
+    auto& observer=workspace.editor.scene->CreateGameObject("Listener");
+    const auto id=observer.GetID();
+    observer.AddComponent<ObjectScript>().scriptFile="Scripts/Listener.cpp";
+    auto& sender=workspace.editor.scene->CreateGameObject("Sender");
+    sender.AddComponent<ObjectScript>().scriptFile="Scripts/SignalSource.cpp";
+    workspace.Play();
+    for(int i=0;i<12;++i)Tick(workspace);
+    Check(Read(workspace,id,"singles")==1&&Read(workspace,id,"stopped")==1&&Read(workspace,id,"repeats")>2,
+          "Public event handlers must distinguish once, every and break across script modules");
+    Check(Read(workspace,id,"functionSeen")==1&&Read(workspace,id,"blocks")==1&&Read(workspace,id,"updates")>1,
+          "A function signal must fire and the blocking triggers must release subsequent updates");
+    Check(Read(workspace,id,"unlocked")==1&&Read(workspace,id,"realTicks")==4&&Read(workspace,id,"gameTicks")==2,
+          "Single fires once and repeating time triggers use the selected clock at half game speed");
+    Check(Read(workspace,id,"sampled")==1&&Read(workspace,id,"samples")==1,
+          "A time trigger in Every Frame evaluates its duration function only on registration");
+    workspace.Stop();
+}
+
+void CheckWorldSignals(const fs::path& root) {
+    using namespace Scripting;
+    Workspace workspace(root,true);
+    auto doc=ScriptDocument::New();
+    ScriptId start{};
+    for(const auto& node:doc.Nodes())if(node.kind==NodeKind::Start)start=node.id;
+    auto subscribe=[&](const char* signal,const char* key,const char* counter){
+        doc.Add(0,NodeKind::Variable,counter);
+        auto trigger=*doc.Get(doc.Add(start,NodeKind::Trigger));
+        trigger.type=signal;trigger.value=key;trigger.args="every";
+        Check(doc.Edit(trigger.id,trigger),"Could not select the world signal");
+        auto change=*doc.Get(doc.Add(trigger.id,NodeKind::Change,counter));
+        change.value=std::string(counter)+" + 1";doc.Edit(change.id,change);
+    };
+    subscribe("Collision Start","","entered");
+    subscribe("Collision End","","exited");
+    subscribe("Component Change","Camera","cameras");
+    subscribe("Component Change","Transform","moves");
+    doc.Add(0,NodeKind::Variable,"oldWaits");
+    auto legacy=doc.Source();
+    constexpr std::string_view updateHeader="Task<> Update() {";
+    auto where=legacy.find(updateHeader);
+    Check(where!=std::string::npos,"Expected the native Every Frame hook");
+    // A Timer saved by the previous editor waits on each visit and may suspend inside its body.
+    legacy.insert(where+updateHeader.size(),"\n        if (co_await TimerSeconds(0, true, 91ULL)) { co_await Wait(0); ++oldWaits; }\n");
+    workspace.SaveScript("Scripts/WorldSignals.cpp",legacy);
+    auto& object=workspace.editor.scene->CreateGameObject("Observer");
+    object.transform.position={30,30,30};
+    object.AddComponent<BoxCollider>();
+    object.AddComponent<ObjectScript>().scriptFile="Scripts/WorldSignals.cpp";
+    auto& peer=workspace.editor.scene->CreateGameObject("Peer");
+    peer.transform.position={35,30,30};peer.AddComponent<BoxCollider>();
+    const auto id=object.GetID(),other=peer.GetID();
+    workspace.Play();Tick(workspace);
+    auto& active=*workspace.editor.scene->Find(id);
+    auto& otherObject=*workspace.editor.scene->Find(other);
+    otherObject.transform.position=active.transform.position;
+    auto& camera=active.AddComponent<CameraComponent>();
+    Tick(workspace);Tick(workspace);
+    Check(Read(workspace,id,"entered")==1&&Read(workspace,id,"cameras")==1,"Collision entry and component addition fire once");
+    camera.enabled=false;
+    Tick(workspace);
+    camera.fieldOfView+=5;
+    Tick(workspace);
+    active.RemoveComponent<CameraComponent>();
+    active.transform.position.x+=5;
+    Tick(workspace);Tick(workspace);
+    Check(Read(workspace,id,"exited")==1&&Read(workspace,id,"entered")==1,"Separation fires Collision End once");
+    Check(Read(workspace,id,"cameras")==4&&Read(workspace,id,"moves")==1,
+          "Component Change tracks enabled, serialized properties, removal and owner Transform");
+    Check(Read(workspace,id,"oldWaits")>=2,"Reopened inline Timer must still wait and run its body on each visit");
+    workspace.Stop();
+}
+
 void CheckMovement(const fs::path& root) {
     using namespace Scripting;
     auto document=ScriptDocument::New();
@@ -204,6 +346,8 @@ int main(int argc,char** argv) try {
     Check(located,"Dynamic Wait error did not reach its originating editor row");
     player.Stop();
     CheckMovement(root.parent_path()/NewAssetID());
+    CheckCrossScriptSignals(root.parent_path()/NewAssetID());
+    CheckWorldSignals(root.parent_path()/NewAssetID());
     std::cout<<"Native Save, Play, prefab binding, rollback and packaged module passed\n";
     return 0;
 } catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

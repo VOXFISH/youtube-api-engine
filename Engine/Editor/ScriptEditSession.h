@@ -82,13 +82,14 @@ struct ScriptEditingSession {
         targets=savedTargets=std::move(bindings);
         diagnostics=main.document.Validate();
     }
-    unsigned Separate(ScriptId root){
+    unsigned Separate(ScriptId root){return Separate(main,root);}
+    unsigned Separate(const ScriptView& source,ScriptId root){
         auto id=++nextWindow;
         auto& view=detached[id];
-        view.document=main.document;
+        view.document=source.document;
         view.root=root;
-        view.base=main.document.Source();
-        view.diagnostics=main.document.Validate();
+        view.base=source.document.Source();
+        view.diagnostics=(&source==&main)?diagnostics:source.diagnostics;
         view.expanded[root]=true;
         return id;
     }
@@ -123,7 +124,7 @@ struct ScriptEditingSession {
             auto* old=before.Get(n.id);
             return !old||old->parent!=n.parent||old->kind!=n.kind||old->name!=n.name||old->type!=n.type||
                    old->value!=n.value||old->args!=n.args||old->moveCoordinates!=n.moveCoordinates||
-                   old->riceCon!=n.riceCon||old->isPublic!=n.isPublic||
+                   old->riceCon!=n.riceCon||old->isPublic!=n.isPublic||old->blockOthers!=n.blockOthers||
                    old->riceScope!=n.riceScope||old->riceLife!=n.riceLife||old->riceAccess!=n.riceAccess||
                    old->policy!=n.policy||old->references!=n.references;
         };

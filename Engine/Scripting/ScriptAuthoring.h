@@ -15,7 +15,8 @@ inline constexpr char GameSpeedTarget[] = "Game Speed";
 enum class NodeKind {
     Start, Update, Variable, Function, Class, OnCreate, OnDestroy,
     Change, Call, NewClass, Activate, Loop, Condition, ElseIf, Else, Wait,
-    EndFunction, EndLoop, Custom, SetState, ChangeState, State, OnEnter, OnUpdate, OnExit, Move
+    EndFunction, EndLoop, Custom, SetState, ChangeState, State, OnEnter, OnUpdate, OnExit, Move,
+    Trigger, Timer, Event, EmitEvent, BreakTrigger // Timer represents existing inline native waits.
 };
 
 struct ScriptNode {
@@ -23,12 +24,13 @@ struct ScriptNode {
     NodeKind kind = NodeKind::Custom;
     std::string name, type, value, args;
     std::array<std::string,3> moveCoordinates{};
-    bool riceCon = false, isPublic = false, coroutine = true;
+    bool riceCon = false, isPublic = false, coroutine = true, blockOthers = false;
     std::string qualifiers;
     std::string riceScope = "build", riceLife = "game", riceAccess = "locked", policy;
     std::map<std::string, ScriptId> references;
     std::size_t line = 1;
 };
+std::string SignalKey(const ScriptNode& declaration,std::string_view externalScript={});
 
 struct ScriptDiagnostic {
     ScriptId node = 0;
@@ -50,6 +52,7 @@ struct ScriptCallExpression {
     std::size_t argumentsBegin = std::string::npos, argumentsEnd = std::string::npos;
 };
 std::vector<ScriptParameter> FunctionParameters(std::string_view declarations);
+std::vector<std::string> SplitParameterDeclarations(std::string_view declarations);
 std::vector<std::string> SplitArguments(std::string_view arguments);
 std::optional<ScriptCallExpression> ParseScriptCall(std::string_view expression);
 std::optional<ScriptCallExpression> ParseVectorInitializer(std::string_view expression, std::string_view type);
@@ -63,6 +66,7 @@ public:
     void MergeExternal(std::string_view base, std::string_view external,
                        const std::function<bool(ScriptId)>& allow = {});
     const std::string& Source() const { return source_; }
+    std::string InstrumentedSource(std::string_view scriptKey) const;
     const std::string& ScriptClassName() const { return qualifiedName_; }
     bool HasModuleEntry() const;
     // The editor can stage an SDK adapter for global, unwrapped native hooks.
@@ -82,6 +86,7 @@ public:
     bool CanSee(ScriptId symbol, ScriptId owner) const;
     const ScriptNode* FindVisibleFunction(std::string_view name, ScriptId owner, ScriptId preferred = 0) const;
     std::string VisibleVariableType(std::string_view name, ScriptId owner, ScriptId preferred = 0) const;
+    bool HasImplicitConstructorOwner(std::string_view className) const;
     bool CanAwait(ScriptId owner) const;
     std::string NativeExpression(std::string text, ScriptId owner) const;
     bool CanRead(ScriptId variable) const;
@@ -95,6 +100,7 @@ private:
     struct Range {
         std::size_t begin{}, code{}, headerEnd{}, end{}, childrenEnd{}, lastLine{};
         bool block = false;
+        bool implicitConstructorOwner = false;
     };
     std::size_t Index(ScriptId id) const;
     bool Within(ScriptId node, ScriptId owner) const;

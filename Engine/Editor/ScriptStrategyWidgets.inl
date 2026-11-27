@@ -111,30 +111,28 @@
             auto slot=std::find_if(view.document.Nodes().begin(),view.document.Nodes().end(),[&](const auto& item){
                 return IsStrategy(item)&&item.name==line.slot&&view.document.CanSee(item.id,n.id);
             });
-            if (slot!=view.document.Nodes().end()) {
-                const auto signature=Scripting::SplitArguments(Between(slot->type,'<','>'));
-                if(!signature.empty()){
-                    std::vector<Scripting::ScriptParameter> parameters;
-                    for(size_t i=1;i<signature.size();++i){
-                        Scripting::ScriptParameter parameter;
-                        parameter.declaration=parameter.type=signature[i];
-                        parameters.push_back(std::move(parameter));
-                    }
-                    if(ArgumentFields(w,e,view,targets,n.id,"Arguments",parameters,line.argument)){
-                        line.argument=view.document.NativeExpression(std::move(line.argument),n.parent);
-                        edited=true;
-                    }
-                }else edited=TextField("Arguments",line.argument);
-                if(!signature.empty()&&signature.front()!="void"&&ImGui::BeginCombo("Output",line.output.empty()?"Discard":line.output.c_str())){
-                    if(ImGui::Selectable("Discard",line.output.empty())) {line.output.clear();edited=true;}
-                    for(auto& variable:view.document.Nodes()) {
-                        if(variable.kind!=Kind::Variable||StrategyKey(variable.type)!=StrategyKey(signature.front())||
-                           !view.document.CanSee(variable.id,n.parent)) continue;
-                        if(ImGui::Selectable(variable.name.c_str(),line.output==variable.name)){line.output=variable.name;edited=true;}
-                    }
-                    ImGui::EndCombo();
+            std::vector<std::string> signature;
+            if(slot!=view.document.Nodes().end())signature=Scripting::SplitArguments(Between(slot->type,'<','>'));
+            if(signature.empty())edited=ArgumentList(w,e,view,targets,n.id,"Arguments",line.argument);
+            else {
+                std::vector<Scripting::ScriptParameter> parameters;
+                for(size_t i=1;i<signature.size();++i){
+                    Scripting::ScriptParameter parameter;
+                    parameter.declaration=parameter.type=signature[i];
+                    parameters.push_back(std::move(parameter));
                 }
-            } else edited=TextField("Arguments",line.argument);
+                edited=ArgumentFields(w,e,view,targets,n.id,"Arguments",parameters,line.argument);
+            }
+            if(edited)line.argument=view.document.NativeExpression(std::move(line.argument),n.parent);
+            if(!signature.empty()&&signature.front()!="void"&&ImGui::BeginCombo("Output",line.output.empty()?"Discard":line.output.c_str())){
+                if(ImGui::Selectable("Discard",line.output.empty())) {line.output.clear();edited=true;}
+                for(auto& variable:view.document.Nodes()) {
+                    if(variable.kind!=Kind::Variable||StrategyKey(variable.type)!=StrategyKey(signature.front())||
+                       !view.document.CanSee(variable.id,n.parent)) continue;
+                    if(ImGui::Selectable(variable.name.c_str(),line.output==variable.name)){line.output=variable.name;edited=true;}
+                }
+                ImGui::EndCombo();
+            }
         }
         if (edited) n.value=StrategySource(line);
         return true;

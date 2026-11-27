@@ -15,6 +15,7 @@ public:
     virtual ~ScriptExecution() = default;
     virtual void Tick(float seconds) = 0;
     virtual bool Read(const char* name, Scripting::Value& value, uint64_t symbol = 0) = 0;
+    virtual bool TriggerBlocking(uint64_t) const { return false; }
 };
 
 // The three creation presets retain their legacy registry identities. This
@@ -59,6 +60,7 @@ struct ScriptComponentBase : MonoBehaviour {
         return instance.get();
     }
     void Update(float dt) override { if (auto* script = Execution()) script->Tick(dt); }
+    bool TriggerBlocking(uint64_t row) const { return instance&&instance->TriggerBlocking(row); }
     void OnPoolRelease() override { ResetExecution(); }
     void OnDestroy() override { ResetExecution(); }
     void ResetExecution() { instance.reset(); attempted = false; }

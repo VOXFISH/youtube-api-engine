@@ -137,6 +137,134 @@ struct ScriptPanelTestAccess {
         reopened.SetSource(doc.Source());
         Check(SplitArguments(panel.ParseStrategy(*reopened.Get(invoke)).argument)==std::vector<std::string>{"5","score"},
               "Filling the missing strategy argument keeps the existing native argument");
+
+        doc.SetSource(R"cpp(
+            struct GameScript : ScriptBase {
+                int score = 1;
+                struct Pair {
+                    struct Nested { /*rice:owner*/ GameScript* riceOwner = nullptr; };
+                    Pair(GameScript&, int = 0, int = 0) {}
+                };
+                void Many(int first, ...) {}
+                Task<> Start() {
+                    std::optional<Pair> pair;
+                    pair.emplace(*this);
+                    CheckedEmplace(pair, *this, score, Compute(1, 2));
+                    Many(score, Compute(1, 2));
+                    co_await Missing(score, Compute(1, 2));
+                    co_await missingSlot.Invoke(score, Compute(1, 2));
+                }
+            };
+            RICE_SCRIPT_MODULE(GameScript)
+        )cpp");
+        std::vector<ScriptId> calls;
+        for(const auto& item:doc.Nodes()){
+            if(item.kind==NodeKind::Call||item.kind==NodeKind::NewClass||
+               panel.ParseStrategy(item).action==ScriptPanel::StrategyAction::Invoke)calls.push_back(item.id);
+        }
+        Check(calls.size()==5,"Expected both native constructor forms, a variadic call, an unresolved call and a strategy invocation");
+        for(auto id:calls){
+            target=id;panel.buffers.clear();
+            const auto before=doc.Source();
+            frame();frame();
+            if(doc.Get(id)->kind==NodeKind::NewClass&&doc.Get(id)->args=="*this"){
+                Check(inputFor("*this")&&doc.Source()==before,"A native constructor's explicit owner is an editable argument");
+                continue;
+            }
+            Check(doc.Source()==before&&visible.find("Add argument")!=visible.npos&&inputFor("Compute(1, 2)"),
+                  "Opening a dynamic argument list preserves the source and keeps a nested call in one field");
+            enter(inputFor("score"),"8");
+            reopened.SetSource(doc.Source());
+            const auto& item=*reopened.Get(id);
+            const auto args=item.kind==NodeKind::Custom?panel.ParseStrategy(item).argument:item.args;
+            std::vector<std::string> expected{"8","Compute(1, 2)"};
+            if(item.kind==NodeKind::NewClass)expected.insert(expected.begin(),"*this");
+            Check(SplitArguments(args)==expected,
+                  "Editing one dynamic argument survives reopening and preserves its neighbor");
+            if(item.name=="Missing"){
+                const auto scope=ImGui::FindWindowByName("Argument input test")->GetID("Arguments");
+                const auto list=ImHashStr("Arguments",0,scope);
+                ImGui::ActivateItemByID(ImHashStr("Add argument",0,list));frame();frame();
+                Check(SplitArguments(doc.Get(id)->args)==std::vector<std::string>{"8","Compute(1, 2)","0"},
+                      "Adding an argument keeps the existing values in order");
+                const int middle=1;
+                ImGui::ActivateItemByID(ImHashStr("-##remove",0,ImHashData(&middle,sizeof(middle),list)));frame();frame();
+                Check(SplitArguments(doc.Get(id)->args)==std::vector<std::string>{"8","0"},
+                      "Removing the middle argument keeps its two neighbors");
+            }
+        }
+    }
+    static void ParameterDeclarations(Workspace& workspace){
+        ScriptPanel panel;
+        ScriptPanel::Entry entry;
+        entry.Reset(ScriptDocument::New());
+        auto& doc=entry.main.document;
+        const auto function=doc.Add(0,NodeKind::Function,"Adjust");
+        const auto klass=doc.Add(0,NodeKind::Class,"Counter");
+        const auto method=doc.Add(klass,NodeKind::Function,"Reset");
+        const std::string limits="std::pair<int, float> limits";
+        const std::string count="int count = std::max(2, 3)";
+        auto definition=*doc.Get(function);
+        definition.args=limits+",  "+count;
+        Check(doc.Edit(function,definition),"Could not set up an existing parameter declaration");
+        definition=*doc.Get(method);
+        definition.args="void";
+        Check(doc.Edit(method,definition),"Could not set up a void parameter list");
+
+        auto target=function;
+        ImGuiID listId{};
+        auto frame=[&]{
+            ImGui::NewFrame();
+            ImGui::SetNextWindowSize({620,500});
+            ImGui::Begin("Parameter declaration test",nullptr,ImGuiWindowFlags_NoSavedSettings);
+            listId=ImGui::GetID("Parameters");
+            auto row=*doc.Get(target);
+            if(panel.ItemFields(workspace,entry,entry.main,entry.targets,row))panel.MarkEdit(entry,entry.main,row);
+            ImGui::End();ImGui::Render();
+        };
+        auto rowControl=[&](int index,const char* label){
+            return ImHashStr(label,0,ImHashData(&index,sizeof(index),listId));
+        };
+        auto activate=[&](ImGuiID id){ImGui::ActivateItemByID(id);frame();};
+        auto add=[&]{activate(ImHashStr("Add parameter",0,listId));};
+        auto remove=[&](int index){activate(rowControl(index,"-##remove"));};
+
+        const auto original=doc.Source();
+        frame();frame();
+        Check(doc.Source()==original&&panel.buffers.at(rowControl(0,"##declaration")).model==limits&&
+              panel.buffers.at(rowControl(1,"##declaration")).model==count,
+              "Opening a signature preserves its source and gives each declaration one complete row");
+        add();
+        const auto added=FunctionParameters(doc.Get(function)->args);
+        Check(added.size()==3&&added.back().type=="int"&&!added.back().defaultValue.empty(),
+              "Adding a parameter after a default creates a valid trailing integer declaration");
+        const auto input=rowControl(2,"##declaration");
+        activate(input);
+        Check(ImGui::GetActiveID()==input,"The added parameter accepts keyboard input");
+        const std::string scale="float scale = 1";
+        auto& io=ImGui::GetIO();
+        io.AddInputCharactersUTF8(scale.c_str());frame();
+        io.AddKeyEvent(ImGuiKey_Enter,true);frame();
+        io.AddKeyEvent(ImGuiKey_Enter,false);frame();
+        Check(doc.Get(function)->args==limits+", "+count+", "+scale,
+              "Editing a new declaration keeps the template and default expression in neighboring rows");
+        remove(1);
+        ScriptDocument reopened;reopened.SetSource(doc.Source());
+        Check(reopened.Get(function)->args==limits+", "+scale,
+              "Removing the middle parameter persists the other declarations in order");
+
+        target=method;panel.buffers.clear();
+        const auto beforeMethod=doc.Source();
+        frame();
+        Check(doc.Source()==beforeMethod&&!panel.buffers.contains(rowControl(0,"##declaration")),
+              "Opening a method declared with (void) shows an empty parameter list and preserves its source");
+        add();
+        Check(FunctionParameters(doc.Get(method)->args).size()==1&&doc.Get(method)->args.find("void")==std::string::npos,
+              "Adding the first class method parameter replaces (void)");
+        remove(0);
+        reopened.SetSource(doc.Source());
+        Check(reopened.Get(method)->args.empty()&&reopened.Get(function)->args==limits+", "+scale,
+              "Removing the last class method parameter saves an empty signature without changing the other function");
     }
     static void ExternalMoveCoordinates(){
         ScriptDocument disk=ScriptDocument::New();
@@ -238,6 +366,9 @@ struct ScriptPanelTestAccess {
         io.AddKeyEvent(ImGuiKey_Enter,false);frame();
         Check(main.open&&!main.findOpen&&main.selected==otherCall,"Arrow navigation and Enter did not return focus to the selected instance");
         ArgumentInputs(workspace);
+        ParameterDeclarations(workspace);
+        SignalInputs(workspace);
+        HeaderWindows(workspace);
         ImGui::DestroyContext();
 
         auto source=workspace.project->assets.Root()/"test-script.cpp";
@@ -362,6 +493,173 @@ struct ScriptPanelTestAccess {
         catch(const std::exception& error){conflict=std::string_view(error.what()).find("Conflicting edits")!=std::string_view::npos;}
         Check(conflict&&ReadFile(shared)==beforeConflict&&otherScenePanel.HasUnsavedChanges(workspace),
               "Competing drafts of one RiceMonkey source must stay open without overwriting the file");
+    }
+    static void SignalInputs(Workspace& workspace){
+        ScriptPanel panel;
+        ScriptPanel::Entry entry;
+        entry.Reset(ScriptDocument::New());
+        auto& view=entry.main;
+        auto& doc=view.document;
+        auto update=First(doc,NodeKind::Update);
+        Check(panel.Title(*doc.Get(update))=="Every Frame","The Update hook uses the Every Frame label");
+        auto trigger=doc.Add(update,NodeKind::Trigger);
+        auto event=doc.Add(trigger,NodeKind::Event,"Arrived");
+        auto sibling=doc.Add(update,NodeKind::Trigger);
+        Check(trigger&&event&&sibling,"Can author two triggers and a local event");
+        Check(panel.Title(*doc.Get(trigger)).find("When single")!=std::string::npos,
+              "A new trigger displays single in its header");
+        auto target=trigger;
+        ImGuiID scope{};
+        auto frame=[&]{
+            ImGui::NewFrame();
+            ImGui::SetNextWindowSize({600,300});
+            ImGui::Begin("Signal input test");
+            scope=ImGui::GetCurrentWindow()->ID;
+            auto row=*doc.Get(target);
+            if(panel.ItemFields(workspace,entry,view,entry.targets,row))panel.MarkEdit(entry,view,row);
+            ImGui::End();ImGui::Render();
+        };
+        frame();frame();
+        auto activate=[&](const char* name){ImGui::ActivateItemByID(ImHashStr(name,0,scope));frame();frame();};
+        activate("###frequency");
+        Check(doc.Get(trigger)->args=="every","The frequency button switches from single to every");
+        auto chooseSource=[&](const char* label){
+            activate("##source");
+            const auto& popups=ImGui::GetCurrentContext()->OpenPopupStack;
+            Check(!popups.empty()&&popups.back().Window,"The trigger source picker opens");
+            ImGui::ActivateItemByID(popups.back().Window->GetID(label));frame();frame();
+        };
+        chooseSource("Game Seconds");
+        Check(doc.Get(trigger)->type=="Game Seconds"&&doc.Get(trigger)->value=="1",
+              "Choosing Game Seconds provides a default duration");
+        activate("##duration");
+        auto& io=ImGui::GetIO();
+        io.AddInputCharactersUTF8("0.25f");frame();
+        io.AddKeyEvent(ImGuiKey_Enter,true);frame();
+        io.AddKeyEvent(ImGuiKey_Enter,false);frame();
+        chooseSource("Seconds");
+        Check(doc.Get(trigger)->type=="Seconds"&&doc.Get(trigger)->value=="0.25f"&&doc.Get(trigger)->args=="every",
+              "Switching clocks keeps the edited duration and frequency");
+        chooseSource("Collision Start");
+        Check(doc.Get(trigger)->type=="Collision Start"&&doc.Get(trigger)->value.empty(),
+              "Switching to a collision trigger clears the duration");
+        activate("block others");
+        Check(doc.Get(trigger)->blockOthers&&panel.UpdateBlockers(workspace,entry,doc,update).contains(trigger),
+              "A blocking Every Frame trigger dims the following actions in the edit preview");
+        activate("block others");
+        Check(panel.UpdateBlockers(workspace,entry,doc,update).empty(),"Clearing block others restores the following rows");
+        auto signal=*doc.Get(sibling);signal.type="Event";signal.value=SignalKey(*doc.Get(event));
+        Check(panel.SignalPreview(workspace,view,signal,NodeKind::Event)=="Missing event",
+              "A sibling trigger outside a private event's scope cannot pick it");
+        auto registering=*doc.Get(trigger);registering.type="Event";registering.value=signal.value;
+        Check(panel.SignalPreview(workspace,view,registering,NodeKind::Event)=="Missing event",
+              "A trigger source is selected in the enclosing scope, before its local declarations");
+        target=event;frame();activate("private");
+        signal.value=SignalKey(*doc.Get(event));
+        Check(doc.Get(event)->isPublic&&panel.SignalPreview(workspace,view,signal,NodeKind::Event).ends_with("Arrived"),
+              "Making an event public exposes its qualified display name to the sibling trigger");
+    }
+    static void HeaderWindows(Workspace& workspace){
+        ScriptPanel panel;
+        auto& entry=panel.entries.emplace_back();
+        entry.project=workspace.project->root;entry.scene=workspace.project->ActiveScene();
+        auto doc=ScriptDocument::New();
+        auto klass=doc.Add(0,NodeKind::Class,"Walker");
+        auto method=doc.Add(klass,NodeKind::Function,"Step");
+        auto signature=*doc.Get(method);
+        signature.args="float distance";
+        doc.Edit(method,signature);
+        auto local=doc.Add(method,NodeKind::Variable,"speed");
+        auto wait=doc.Add(method,NodeKind::Wait);
+        entry.Reset(std::move(doc));
+
+        auto frame=[&]{ImGui::NewFrame();panel.Draw(workspace,{});ImGui::Render();};
+        auto hover=[&](ImGuiWindow* window,ImGuiID item,bool rightEdge=false){
+            const auto rect=window->InnerClipRect;
+            const float x=rightEdge?window->WorkRect.Max.x-ImGui::GetFrameHeight()*.5f:
+                                    std::min(rect.Min.x+70,rect.GetCenter().x);
+            for(float y=rect.Min.y+2;y<rect.Max.y;y+=4){
+                ImGui::GetIO().AddMousePosEvent(x,y);frame();
+                if(ImGui::GetCurrentContext()->HoveredId==item)return;
+            }
+            throw std::runtime_error("Missing header or menu item in "+std::string(window->Name));
+        };
+        auto click=[&](ImGuiMouseButton button){
+            ImGui::GetIO().AddMouseButtonEvent(button,true);frame();
+            ImGui::GetIO().AddMouseButtonEvent(button,false);frame();frame();
+        };
+        auto windowFor=[&](unsigned id){
+            const auto& view=id?entry.detached.at(id):entry.main;
+            auto* window=ImGui::FindWindowByName(panel.WindowLabel(entry,view,id).c_str());
+            Check(window&&window->Active,"The scoped RiceMonkey window is visible");
+            return window;
+        };
+        auto separate=[&](unsigned from,ScriptId root,std::initializer_list<std::string> groups){
+            auto* window=windowFor(from);
+            Check(!window->DC.ChildWindows.empty(),"The script content is visible");
+            auto* content=window->DC.ChildWindows.front();
+            auto seed=content->ID;
+            for(const auto& group:groups)seed=ImHashStr(group.c_str(),0,seed);
+            seed=ImHashStr(std::to_string(root).c_str(),0,seed);
+            hover(content,ImHashStr("###item",0,seed));
+            click(ImGuiMouseButton_Right);
+            const auto& popups=ImGui::GetCurrentContext()->OpenPopupStack;
+            Check(!popups.empty()&&popups.back().Window,"Right-clicking the declaration header opens its menu");
+            auto* menu=popups.back().Window;
+            hover(menu,menu->GetID("Separate Window"));
+            const auto count=entry.detached.size();
+            click(ImGuiMouseButton_Left);
+            Check(entry.detached.size()==count+1&&entry.detached.at(entry.nextWindow).root==root,
+                  "Separate Window opens one editor rooted at the clicked declaration");
+            windowFor(entry.nextWindow);
+            return entry.nextWindow;
+        };
+        frame();frame();
+        auto* content=windowFor(0)->DC.ChildWindows.front();
+        const auto group=ImHashStr("Class Editor",0,content->ID);
+        const auto openKey=ImHashStr("open",0,group);
+        hover(content,ImHashStr("##expand",0,group),true);
+        click(ImGuiMouseButton_Left);
+        Check(!content->StateStorage.GetBool(openKey,true),"The section triangle collapses the class list");
+        hover(content,ImHashStr("Class Editor",0,group));
+        click(ImGuiMouseButton_Left);
+        Check(content->StateStorage.GetBool(openKey,false),"The section title reopens the class list");
+        auto classWindow=separate(0,klass,{"Class Editor"});
+        auto& classDraft=entry.detached.at(classWindow);
+        EditValue(entry,classDraft,wait,"-1");
+        frame();
+        auto methodWindow=separate(classWindow,method,{std::to_string(klass),"Function Editor"});
+        auto& methodDraft=entry.detached.at(methodWindow);
+        Check(methodDraft.document.Get(wait)->value=="-1"&&
+              std::any_of(methodDraft.diagnostics.begin(),methodDraft.diagnostics.end(),[&](const auto& issue){return !issue.warning&&issue.node==wait;}),
+              "A function detached from a class draft inherits that draft's edits and diagnostics");
+        EditValue(entry,methodDraft,wait,"2");
+        auto* methodEditor=windowFor(methodWindow);
+        hover(methodEditor,methodEditor->GetID("Apply Changes"));click(ImGuiMouseButton_Left);
+        Check(entry.main.document.Get(wait)->value=="2"&&classDraft.document.Get(wait)->value=="-1",
+              "Clicking Apply Changes updates the main draft and keeps the class window's independent draft");
+
+        auto* body=methodEditor->DC.ChildWindows.front();
+        auto left=[&](ImGuiID id){
+            ImGui::FocusWindow(body);
+            ImGui::SetNavID(id,ImGuiNavLayer_Main,body->NavRootFocusScopeId,ImRect{});
+            frame();
+            Check(ImGui::GetCurrentContext()->NavIdIsAlive,"The expanded method submits the requested control");
+            return body->NavRectRel[ImGuiNavLayer_Main].Min.x;
+        };
+        const auto root=ImHashStr(std::to_string(method).c_str(),0,body->ID);
+        const auto variables=ImHashStr("Variables",0,root);
+        const auto localRow=ImHashStr(std::to_string(local).c_str(),0,variables);
+        const auto actionRow=ImHashStr(std::to_string(wait).c_str(),0,root);
+        const int first=0;
+        const auto parameterRow=ImHashData(&first,sizeof(first),ImHashStr("Parameters",0,root));
+        const float headingX=left(ImHashStr("###item",0,root));
+        const float sectionX=left(ImHashStr("Variables",0,variables));
+        const float localX=left(ImHashStr("###item",0,localRow));
+        const float actionX=left(ImHashStr("###item",0,actionRow));
+        const float parameterX=left(ImHashStr("-##remove",0,parameterRow));
+        Check(sectionX>headingX&&localX>sectionX&&actionX==localX&&parameterX>sectionX,
+              "A method indents its sections and nests its parameters, local variables and actions under them");
     }
 };
 }

@@ -1,10 +1,10 @@
-    static bool Decl(Kind k){return k==Kind::Variable||k==Kind::Function||k==Kind::Class;}
+    static bool Decl(Kind k){return k==Kind::Variable||k==Kind::Function||k==Kind::Class||k==Kind::Event;}
     static bool Branch(Kind k){return k==Kind::Condition||k==Kind::ElseIf||k==Kind::Else;}
     static bool Scope(Kind k){
         return k==Kind::Start||k==Kind::Update||k==Kind::Function||k==Kind::Class||k==Kind::OnCreate||
-               k==Kind::OnDestroy||k==Kind::OnEnter||k==Kind::OnUpdate||k==Kind::OnExit;
+               k==Kind::OnDestroy||k==Kind::OnEnter||k==Kind::OnUpdate||k==Kind::OnExit||k==Kind::Trigger;
     }
-    static bool HasBody(Kind k){return Scope(k)||Branch(k)||k==Kind::Loop||k==Kind::State;}
+    static bool HasBody(Kind k){return Scope(k)||Branch(k)||k==Kind::Loop||k==Kind::State||k==Kind::Timer;}
     static Id ScopeOf(const Doc& doc,Id id){
         for(auto* n=doc.Get(id);n;n=doc.Get(n->parent))if(Scope(n->kind))return n->id;
         return 0;
@@ -12,7 +12,9 @@
     static const char* Caption(Kind k){
         switch(k){
             case Kind::Variable:return "Variable";case Kind::Function:return "Function";
-            case Kind::Class:return "Class";case Kind::Start:return "Start";case Kind::Update:return "Update";
+            case Kind::Class:return "Class";case Kind::Start:return "Start";case Kind::Update:return "Every Frame";
+            case Kind::Trigger:return "Trigger";case Kind::Timer:return "Trigger (inline wait)";case Kind::Event:return "Event";
+            case Kind::EmitEvent:return "Emit Event";case Kind::BreakTrigger:return "Break Trigger";
             case Kind::Wait:return "Wait";case Kind::Move:return "Move";case Kind::Loop:return "loop";case Kind::Change:return "Change Variable";
             case Kind::Call:return "Call Function";case Kind::Activate:return "Activate";case Kind::NewClass:return "New Class";
             case Kind::Condition:return "if";case Kind::ElseIf:return "else if";case Kind::Else:return "else";
@@ -28,6 +30,8 @@
         if(Decl(n.kind))return n.name.empty()?Caption(n.kind):n.name;
         std::string label=Caption(n.kind);
         switch(n.kind){
+            case Kind::Trigger:case Kind::Timer:return label+"   When "+(n.args=="every"?"every":"single")+"   "+n.type+
+                (TimeSource(n.type)?"   "+n.value:"")+(n.blockOthers?"   (block others)":"");
             case Kind::Change:return label+"   "+n.name+" "+n.args+" "+n.value;
             case Kind::Move:return label+(n.value.empty()?"":" "+n.value)+" to ("+
                 n.moveCoordinates[0]+", "+n.moveCoordinates[1]+", "+n.moveCoordinates[2]+") per "+n.args;
@@ -67,6 +71,55 @@
         std::string out;
         for(size_t i=0;i<values.size();++i){if(i)out+=", ";out+=values[i];}
         return out;
+    }
+    template<class AddRow,class DrawRow>
+    bool StringListFields(const char* label,std::vector<std::string>& rows,const char* addLabel,AddRow addRow,DrawRow drawRow){
+        ImGui::PushID(label);
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine();
+        bool edited=ImGui::SmallButton(addLabel);
+        if(edited)addRow(rows);
+        size_t remove=rows.size();
+        ImGui::Indent();
+        for(size_t i=0;i<rows.size();++i){
+            ImGui::PushID(static_cast<int>(i));
+            if(ImGui::SmallButton("-##remove"))remove=i;
+            ImGui::SetItemTooltip("Remove row %zu",i+1);
+            ImGui::SameLine();
+            ImGui::BeginGroup();
+            edited|=drawRow(rows[i]);
+            ImGui::EndGroup();
+            ImGui::PopID();
+        }
+        ImGui::Unindent();
+        if(remove<rows.size()){
+            rows.erase(rows.begin()+remove);
+            edited=true;
+        }
+        ImGui::PopID();
+        return edited;
+    }
+    bool ParameterFields(std::string& declarations){
+        auto rows=Scripting::SplitParameterDeclarations(declarations);
+        auto add=[&](auto& items){
+            const auto parameters=Scripting::FunctionParameters(declarations);
+            std::string name="value";
+            for(size_t suffix=2;std::any_of(parameters.begin(),parameters.end(),[&](const auto& p){return p.name==name;});++suffix)
+                name="value"+std::to_string(suffix);
+            const bool needsDefault=std::any_of(parameters.begin(),parameters.end(),[](const auto& p){return !p.defaultValue.empty();});
+            auto at=items.end();
+            if(!items.empty()&&items.back()=="...")--at;
+            items.insert(at,"int "+name+(needsDefault?" = 0":""));
+        };
+        if(!StringListFields("Parameters",rows,"Add parameter",add,[&](std::string& row){
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            const bool changed=TextField("##declaration",row,false,"int score");
+            ImGui::SetItemTooltip("Enter one parameter, such as int score or float scale = 1.");
+            return changed;
+        }))return false;
+        std::erase(rows,std::string{});
+        declarations=Join(rows);
+        return true;
     }
     static std::string Between(const std::string& value,char left,char right){
         auto a=value.find(left),b=value.rfind(right);
@@ -324,11 +377,23 @@
         values.resize(axes,"0");
         row.value=targetType+"("+Join(values)+")";
     }
+    bool ArgumentList(Workspace& w,Entry& e,View& view,Targets& targets,Id owner,const char* label,
+                      std::string& arguments,bool allowAwait=true){
+        auto values=Scripting::SplitArguments(arguments);
+        ImGui::PushID(label);
+        const bool edited=StringListFields("Arguments",values,"Add argument",[](auto& rows){rows.emplace_back("0");},[&](std::string& value){
+            if(!Expression(w,e,view,targets,owner,"##value",value,{},0.f,"Argument",allowAwait))return false;
+            if(value.empty())value="0";
+            return true;
+        });
+        ImGui::PopID();
+        if(edited)arguments=Join(values);
+        return edited;
+    }
     bool ArgumentFields(Workspace& w,Entry& e,View& view,Targets& targets,Id owner,const char* label,
                         const std::vector<Scripting::ScriptParameter>& parameters,std::string& arguments,bool retarget=false,bool allowAwait=true){
-        // A parameter pack cannot be represented by a fixed number of controls.
         if(std::any_of(parameters.begin(),parameters.end(),[](const auto& parameter){return parameter.declaration.find("...")!=std::string::npos;}))
-            return TextField(label,arguments);
+            return ArgumentList(w,e,view,targets,owner,label,arguments,allowAwait);
         auto values=Scripting::SplitArguments(arguments);
         ImGui::PushID(label);
         bool edited=retarget;
@@ -365,6 +430,10 @@
     }
     bool Expression(Workspace& w,Entry& e,View& view,Targets& targets,Id owner,const char* label,std::string& value,
                     std::string_view type={},float width=0.f,const char* hint=nullptr,bool allowAwait=true){
+        // A trigger evaluates its duration at registration, outside its handler's scope.
+        const auto* row=view.document.Get(owner);
+        const Id scope=row&&(row->kind==Kind::Trigger||row->kind==Kind::Timer)?row->parent:owner;
+        const bool canAwait=allowAwait&&view.document.CanAwait(scope);
         auto& buf=Buffer(label,value);
         ImGui::SetNextItemWidth(width>0?width:std::max(100.f,ImGui::GetContentRegionAvail().x*.78f));
         bool submit=ImGui::InputTextWithHint(label,hint,&buf.text,ImGuiInputTextFlags_EnterReturnsTrue);
@@ -381,10 +450,9 @@
                     buf.text.replace(tick,1,expression());picked=true;
                 }
             };
-            for(auto& n:view.document.Nodes())if(n.kind==Kind::Variable&&view.document.CanSee(n.id,owner))
+            for(auto& n:view.document.Nodes())if(n.kind==Kind::Variable&&view.document.CanSee(n.id,scope))
                 pick(n.name,[&]{view.selectedReferences[owner][n.name]=n.id;return n.name;});
-            const bool canAwait=allowAwait&&view.document.CanAwait(owner);
-            for(auto& n:view.document.Nodes())if(n.kind==Kind::Function&&n.type!="void"&&(!n.coroutine||canAwait)&&view.document.CanSee(n.id,owner))
+            for(auto& n:view.document.Nodes())if(n.kind==Kind::Function&&n.type!="void"&&(!n.coroutine||canAwait)&&view.document.CanSee(n.id,scope))
                 pick(n.name+"()",[&]{view.selectedReferences[owner][n.name]=n.id;return n.name+"()";});
             for(auto& child:ChildSymbols(w,e))
                 pick(child.path+" / "+ComponentLabel(child.component)+" / "+child.name,[&]{return BindRead(e,view,targets,child,owner);});
@@ -394,13 +462,13 @@
         }
         const bool committed=(submit||done)&&buf.text!=value;
         auto call=Scripting::ParseScriptCall(buf.text);
-        auto* fn=call?view.document.FindVisibleFunction(call->name,owner,PreferredReference(view,owner,call->name)):nullptr;
-        if(fn&&fn->type!="void"&&(call->argumentsBegin!=std::string::npos||!fn->coroutine||(allowAwait&&view.document.CanAwait(owner)))){
+        auto* fn=call?view.document.FindVisibleFunction(call->name,scope,PreferredReference(view,owner,call->name)):nullptr;
+        if(fn&&fn->type!="void"&&(call->argumentsBegin!=std::string::npos||!fn->coroutine||canAwait)){
             auto parameters=Scripting::FunctionParameters(fn->args);
             bool bare=call->argumentsBegin==std::string::npos;
             auto args=call->arguments;
             if(bare&&committed)
-                if(auto previous=Scripting::ParseScriptCall(value);previous&&view.document.FindVisibleFunction(previous->name,owner))
+                if(auto previous=Scripting::ParseScriptCall(value);previous&&view.document.FindVisibleFunction(previous->name,scope))
                     args=previous->arguments;
             bool changed=ArgumentFields(w,e,view,targets,owner,label,parameters,args,bare&&committed,allowAwait);
             if(changed||(bare&&committed)){
@@ -626,12 +694,18 @@
         bool edit=false;
         if(StrategyFields(w,e,view,targets,n,edit))return edit;
         switch(n.kind){
+        case Kind::Trigger:case Kind::Timer:return TriggerFields(w,e,view,targets,n);
+        case Kind::EmitEvent:return SignalPicker(w,e,view,n,Kind::Event);
+        case Kind::Event:
+            if(ImGui::SmallButton(n.isPublic?"public":"private")){n.isPublic=!n.isPublic;edit=true;}
+            ImGui::SetItemTooltip("%s",n.isPublic?"Available to all scripts.":"Available in this declaration's scope.");
+            ImGui::SameLine();edit|=TextField("Event name",n.name);return edit;
         case Kind::Variable:return VariableFields(w,e,view,targets,n);
         case Kind::Function:{
             if(ImGui::SmallButton(n.isPublic?"public":"private")){n.isPublic=!n.isPublic;edit=true;}
             ImGui::SameLine();edit|=TypePicker(w,e,view,"Return Type",n.type,true);
             ImGui::SetItemTooltip("Return type");ImGui::SameLine();edit|=TextField("Name",n.name);
-            edit|=TextField("Parameters",n.args);ImGui::SetItemTooltip("Enter typed parameters, for example: int score, float amount");
+            edit|=ParameterFields(n.args);
             break;
         }
         case Kind::Class:{
@@ -691,7 +765,7 @@
                 n.name=name;n.args=call->arguments;
             }
             if(fn)edit|=ArgumentFields(w,e,view,targets,n.id,"Arguments",Scripting::FunctionParameters(fn->args),n.args,edit&&n.name!=previous);
-            else edit|=TextField("Arguments",n.args);
+            else edit|=ArgumentList(w,e,view,targets,n.id,"Arguments",n.args);
             break;
         }
         case Kind::Activate:return TargetPicker(w,e,targets,n);
@@ -747,6 +821,9 @@
                 }
                 n.name=newName;n.type=type;edit=true;
             }
+            // Generated constructors take only the implicit script owner.
+            if(!n.args.empty()||!view.document.HasImplicitConstructorOwner(n.type))
+                edit|=ArgumentList(w,e,view,targets,n.id,"Constructor",n.args);
             break;
         }
         case Kind::State:case Kind::ChangeState:case Kind::SetState:
@@ -768,25 +845,40 @@
     }
     void Context(Entry& e,View& view,const Node& n,const Targets& targets){
         if(!Decl(n.kind)||!ImGui::BeginPopupContextItem("Script item"))return;
-        if(n.kind==Kind::Function||n.kind==Kind::Variable)if(ImGui::MenuItem("Find Instances")){
+        if(n.kind!=Kind::Class)if(ImGui::MenuItem("Find Instances")){
             view.Find(n.id);view.findOpen=true;
         }
         if(n.kind==Kind::Function||n.kind==Kind::Class)if(ImGui::MenuItem("Separate Window")){
-            auto window=e.Separate(n.id);
-            auto& next=e.detached.at(window);
-            next.document=view.document;next.base=view.document.Source();
+            auto window=e.Separate(view,n.id);
             e.detachedTargets[window]=e.targetBases[window]=targets;
         }
         ImGui::EndPopup();
     }
+    static void SectionBand(){
+        ImGui::NewLine();
+        const auto start=ImGui::GetCursorScreenPos();
+        const ImVec2 end{start.x+ImGui::GetContentRegionAvail().x,start.y+ImGui::GetFrameHeight()};
+        ImGui::GetWindowDrawList()->AddRectFilled(start,end,ImGui::GetColorU32(ImGuiCol_FrameBg),ImGui::GetStyle().FrameRounding);
+    }
+    static void FoldButton(bool& open){
+        if(ImGui::ArrowButton("##expand",open?ImGuiDir_Down:ImGuiDir_Up))open=!open;
+    }
+    static bool HeaderLabel(const char* label,bool selected,bool section){
+        const float width=ImGui::GetContentRegionAvail().x-ImGui::GetFrameHeight()-ImGui::GetStyle().ItemSpacing.x;
+        ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign,{0.f,.5f});
+        const bool clicked=ImGui::Selectable(label,selected,ImGuiSelectableFlags_None,
+                                             {std::max(1.f,width),section?ImGui::GetFrameHeight():0.f});
+        ImGui::PopStyleVar();
+        return clicked;
+    }
     void Heading(const char* text,bool& open){
-        auto width=ImGui::GetContentRegionAvail().x;
-        if(ImGui::Selectable(text,false,ImGuiSelectableFlags_None,{std::max(1.f,width-ImGui::GetFrameHeight()-8),0}))open=!open;
+        SectionBand();
+        if(HeaderLabel(text,false,true))open=!open;
         ImGui::SameLine();
-        if(ImGui::ArrowButton("##expand",open?ImGuiDir_Up:ImGuiDir_Down))open=!open;
+        FoldButton(open);
     }
     void Group(Workspace& w,Entry& e,View& view,Targets& targets,Id owner,Kind kind,bool compact=false){
-        const char* name=kind==Kind::Variable?"Variables":kind==Kind::Function?(compact?"Functions":"Function Editor"):
+        const char* name=kind==Kind::Variable?"Variables":kind==Kind::Event?"Events":kind==Kind::Function?(compact?"Functions":"Function Editor"):
                          kind==Kind::Class?(compact?"Classes":"Class Editor"):"States";
         ImGui::PushID(name);
         auto* store=ImGui::GetStateStorage();auto key=ImGui::GetID("open");
@@ -794,7 +886,7 @@
         if(view.scroll)open=true;
         Heading(name,open);store->SetBool(key,open);
         if(open){
-            ImGui::Indent(12);
+            ImGui::Indent();
             auto ids=Children(view.document,owner);
             for(auto id:ids){
                 auto* n=view.document.Get(id);if(!n||n->kind!=kind)continue;
@@ -810,7 +902,7 @@
             ImGui::BeginDisabled(!selected||selected->parent!=owner||selected->kind!=kind);
             if(ImGui::SmallButton("-"))Remove(e,view,view.selected);
             ImGui::EndDisabled();
-            ImGui::Unindent(12);
+            ImGui::Unindent();
         }
         ImGui::PopID();
     }
@@ -819,9 +911,17 @@
         if(ImGui::MenuItem("New Function"))Add(e,view,ScopeOf(view.document,owner),Kind::Function);
         if(ImGui::MenuItem("Set Variable"))Add(e,view,ScopeOf(view.document,owner),Kind::Variable);
         StrategyMenu(e,view,owner);
-        for(auto k:{Kind::NewClass,Kind::Change,Kind::Call,Kind::Activate,Kind::Move,Kind::Loop,Kind::Wait,Kind::Condition}){
+        for(auto k:{Kind::NewClass,Kind::Change,Kind::Call,Kind::Activate,Kind::Move,Kind::Loop,Kind::Wait,Kind::Condition,
+                    Kind::Trigger,Kind::EmitEvent}){
             if(ImGui::MenuItem(k==Kind::Loop?"Loop":k==Kind::Condition?"Condition":Caption(k)))
                 Add(e,view,owner,k);
+        }
+        for(auto* ancestor=view.document.Get(owner);ancestor;ancestor=view.document.Get(ancestor->parent)){
+            if(ancestor->kind==Kind::Trigger){
+                if(ImGui::MenuItem("Break Trigger"))Add(e,view,owner,Kind::BreakTrigger);
+                break;
+            }
+            if(Scope(ancestor->kind))break;
         }
         if(ImGui::BeginMenu("End")){
             if(ImGui::MenuItem("Function"))Add(e,view,owner,Kind::EndFunction);
@@ -844,9 +944,15 @@
     }
     void Actions(Workspace& w,Entry& e,View& view,Targets& targets,Id owner){
         auto ids=Children(view.document,owner);
+        const auto blockedAfter=UpdateBlockers(w,e,view.document,owner);
+        bool waiting=false;
         for(auto id:ids){
             auto* node=view.document.Get(id);
-            if(node&&!Decl(node->kind))DrawNode(w,e,view,targets,id);
+            if(!node||Decl(node->kind))continue;
+            if(waiting)ImGui::PushStyleVar(ImGuiStyleVar_Alpha,ImGui::GetStyle().Alpha*ImGui::GetStyle().DisabledAlpha);
+            DrawNode(w,e,view,targets,id);
+            if(waiting)ImGui::PopStyleVar();
+            waiting|=blockedAfter.contains(id);
         }
         if(ImGui::SmallButton("+##actions"))ImGui::OpenPopup("Add action");
         ImGui::SetItemTooltip("Add an action");ImGui::SameLine();
@@ -871,25 +977,28 @@
         const auto& runtime=RuntimeErrors(w,e.path);
         red|=std::any_of(runtime.begin(),runtime.end(),[&](const auto& item){return Belongs(view.document,item.first,id);});
         bool green=item.kind==Kind::Variable&&HasProtected(w,e,item);
+        const bool section=Scope(item.kind)||item.kind==Kind::State;
+        if(section)SectionBand();
         if(red||green)ImGui::PushStyleColor(ImGuiCol_Text,red?ImVec4(1,.3f,.3f,1):ImVec4(.35f,.88f,.43f,1));
         const bool reveal=view.scroll&&view.reveal==id;
         if(reveal)ImGui::SetKeyboardFocusHere();
         auto label=Title(item)+"###item";
-        if(ImGui::Selectable(label.c_str(),id==view.selected,ImGuiSelectableFlags_None,
-                {std::max(1.f,ImGui::GetContentRegionAvail().x-ImGui::GetFrameHeight()-8),0})){
+        if(HeaderLabel(label.c_str(),id==view.selected,section)){
             view.selected=id;open=true;
         }
         if(red||green)ImGui::PopStyleColor();
         if(reveal){ImGui::SetScrollHereY(.4f);view.scroll=false;}
         Context(e,view,item,targets);ImGui::SameLine();
-        if(ImGui::ArrowButton("##expand",open?ImGuiDir_Up:ImGuiDir_Down))open=!open;
+        FoldButton(open);
         if(open){
-            ImGui::Indent(12);
+            const auto bodyStart=ImGui::GetCursorScreenPos();
+            ImGui::Indent();
             if(ItemFields(w,e,view,targets,item))MarkEdit(e,view,item);
             if(HasBody(item.kind)){
                 const bool locals=Scope(item.kind);
                 if(locals){
                     Group(w,e,view,targets,id,Kind::Variable);
+                    Group(w,e,view,targets,id,Kind::Event);
                     Group(w,e,view,targets,id,Kind::Function);
                     Group(w,e,view,targets,id,Kind::Class);
                 }
@@ -899,11 +1008,19 @@
                         if(n&&!Decl(n->kind))DrawNode(w,e,view,targets,child);
                     }
                 }else{
-                    ImGui::SeparatorText("Definition");
+                    SectionBand();
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextUnformatted("Definition");
+                    ImGui::Indent();
                     Actions(w,e,view,targets,id);
+                    ImGui::Unindent();
                 }
+                const float guideX=bodyStart.x+ImGui::GetStyle().IndentSpacing*.5f;
+                const float bodyBottom=ImGui::GetCursorScreenPos().y-ImGui::GetStyle().ItemSpacing.y;
+                if(bodyBottom>bodyStart.y)
+                    ImGui::GetWindowDrawList()->AddLine({guideX,bodyStart.y},{guideX,bodyBottom},ImGui::GetColorU32(ImGuiCol_Separator));
             }
-            ImGui::Unindent(12);
+            ImGui::Unindent();
         }
         ImGui::PopID();
     }
@@ -992,6 +1109,7 @@
                     else ImGui::TextDisabled("This declaration was deleted.");
                 }else{
                     Group(w,e,view,targets,0,Kind::Variable);
+                    Group(w,e,view,targets,0,Kind::Event);
                     Group(w,e,view,targets,0,Kind::Function,true);
                     Group(w,e,view,targets,0,Kind::Class,true);
                     Group(w,e,view,targets,0,Kind::Function);

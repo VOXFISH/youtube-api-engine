@@ -16,6 +16,79 @@ bool Has(const ScriptDocument& d,std::string text,bool warn=false){
     for(const auto& issue:d.Validate())if(issue.warning==warn&&issue.message.find(text)!=std::string::npos)return true;
     return false;
 }
+void CheckSignals(){
+    auto doc=ScriptDocument::New();
+    auto start=Find(doc,NodeKind::Start), update=Find(doc,NodeKind::Update);
+    auto event=doc.Add(start,NodeKind::Event,"Ready");
+    auto localKey=SignalKey(*doc.Get(event));
+    Check(!doc.CanSee(event,update),"A private Start event only appears within Start");
+    auto fire=doc.Add(start,NodeKind::EmitEvent);
+    auto trigger=doc.Add(update,NodeKind::Trigger);
+    auto watch=*doc.Get(trigger);watch.type="Event";watch.value=localKey;watch.args="every";
+    Check(doc.Edit(trigger,watch)&&Has(doc,"visible event"),"An inaccessible private event is diagnosed");
+    auto declaration=*doc.Get(event);declaration.isPublic=true;doc.Edit(event,declaration);
+    auto key=SignalKey(*doc.Get(event));
+    Check(doc.CanSee(event,update)&&doc.Get(fire)->value==key&&doc.Get(trigger)->value==key,
+          "Publishing a local event updates existing bindings and makes it visible in other scopes");
+    auto fn=doc.Add(0,NodeKind::Function,"BeginRound");
+    auto raw=doc.Source();
+    auto at=raw.find("/*rice:finish*/",raw.find(doc.Text(trigger)));
+    Check(at!=std::string::npos,"Find handler body");
+    raw.insert(at,"/*rice:31*/ if (co_await TimerSignal(SignalKind::Function, \""+SignalKey(*doc.Get(fn))+"\", 31ULL)) {\n}\n");
+    doc.SetSource(raw);
+    auto timer=Find(doc,NodeKind::Timer);
+    Check(timer==31&&doc.Get(timer)->args=="once"&&doc.Get(timer)->blockOthers&&
+          doc.Get(timer)->value==SignalKey(*doc.Get(fn)),"Legacy inline waits load with their source and blocking behavior");
+    auto until=*doc.Get(timer);until.type="Game Seconds";until.value="0.75";doc.Edit(timer,until);
+    auto pause=doc.Add(timer,NodeKind::Wait);
+    auto stop=doc.Add(timer,NodeKind::BreakTrigger);
+    ScriptDocument reopened;reopened.SetSource(doc.Source());
+    Check(stop&&pause&&reopened.Get(stop)->parent==timer&&reopened.Get(pause)->parent==timer&&reopened.Get(timer)->parent==trigger&&
+          reopened.Get(trigger)->args=="every"&&reopened.Get(timer)->value==until.value,
+          "Editing a legacy wait preserves its inline body, nested wait and break target on reopen");
+    Check(reopened.Text(timer).find("TimerSeconds(0.75, true, 31ULL)")!=std::string::npos&&
+          !doc.Add(trigger,NodeKind::Timer),"Existing timers retain their per-visit semantics and new rows use Trigger");
+    auto unit=doc.InstrumentedSource("Scripts/Example.cpp");
+    Check(unit.find(SignalKey(*doc.Get(event),"Scripts/Example.cpp"))!=std::string::npos&&
+          unit.find("SignalCurrentFunction(")!=std::string::npos&&doc.Source().find("SignalCurrentFunction(")==std::string::npos,
+          "Compiled signal keys are script-qualified and entry instrumentation leaves the editable source intact");
+    watch=*doc.Get(trigger);watch.blockOthers=true;doc.Edit(trigger,watch);
+    Check(doc.Get(trigger)->blockOthers&&Has(doc,"inline wait requires a coroutine"),"A blocking trigger rejects an inline wait");
+    doc.Erase(timer);
+    Check(doc.Text(trigger).find("/*rice:finish*/ return;")!=std::string::npos,"A blocking handler uses an ordinary return");
+    doc.Add(start,NodeKind::BreakTrigger);
+    Check(Has(doc,"requires an enclosing Trigger"),"Break Trigger cannot escape another function");
+}
+void CheckTimedTriggers(){
+    auto doc=ScriptDocument::New();
+    auto update=Find(doc,NodeKind::Update),speed=doc.Add(0,NodeKind::Function,"Speed");
+    auto fn=*doc.Get(speed);fn.type="float";doc.Edit(speed,fn);
+    auto trigger=doc.Add(update,NodeKind::Trigger);
+    auto watch=*doc.Get(trigger);watch.type="Game Seconds";watch.value="Speed() * 2";
+    Check(doc.Edit(trigger,watch)&&doc.Get(trigger)->value==watch.value&&doc.Get(trigger)->args=="once",
+          "Game Seconds keeps the editable duration expression and single mode");
+    auto row=std::to_string(trigger)+"ULL";
+    Check(doc.Text(trigger).find("SignalKind::GameSeconds, HasTrigger("+row+") ? 0 : ((co_await Speed()) * 2)")!=std::string::npos&&
+          doc.Instances(speed)==std::vector<ScriptId>{trigger},"A timed trigger evaluates a coroutine expression only when arming");
+    watch=*doc.Get(trigger);watch.type="Seconds";watch.args="every";watch.blockOthers=true;
+    Check(doc.Edit(trigger,watch),"Switch clock and mode");
+    ScriptDocument reopened;reopened.SetSource(doc.Source());
+    Check(reopened.Get(trigger)->value==watch.value&&reopened.Get(trigger)->args=="every"&&
+          reopened.Get(trigger)->blockOthers&&reopened.Text(trigger).find("SignalKind::Seconds")!=std::string::npos,
+          "Blocking every triggers reopen with the selected clock and expression");
+    watch.value="-1";doc.Edit(trigger,watch);
+    Check(Has(doc,"finite, non-negative"),"Negative trigger intervals are diagnosed");
+    watch.value="";doc.Edit(trigger,watch);
+    Check(Has(doc,"Choose a wait duration"),"Missing trigger intervals are diagnosed");
+    auto klass=doc.Add(0,NodeKind::Class,"Countdown");
+    auto method=doc.Add(klass,NodeKind::Function,"Arm"),memberTrigger=doc.Add(method,NodeKind::Trigger);
+    auto member=*doc.Get(memberTrigger);member.type="Seconds";member.value="Speed()";doc.Edit(memberTrigger,member);
+    auto token="rice_trigger_lifetime_"+std::to_string(klass)+".Token()";
+    auto unit=doc.InstrumentedSource("Countdown.cpp");
+    Check(doc.Get(memberTrigger)->value==member.value&&
+          unit.find("riceOwner->HasTrigger("+std::to_string(memberTrigger)+"ULL, "+token+")")!=std::string::npos&&
+          unit.find("}, "+token+")")!=std::string::npos,"A class duration guard and registration use the same instance lifetime");
+}
 void CheckParameterSlots(){
     auto parameters=FunctionParameters("int count, const std::unordered_map<int, float>& weights, float scale = Factor(2, 3)");
     Check(parameters.size()==3&&parameters[0].name=="count"&&parameters[1].name=="weights"&&
@@ -41,6 +114,8 @@ void CheckParameterSlots(){
 }
 }
 int main(int argc,char** argv){try{
+    CheckSignals();
+    CheckTimedTriggers();
     CheckParameterSlots();
     auto doc=ScriptDocument::New();
     auto start=Find(doc,NodeKind::Start),update=Find(doc,NodeKind::Update);
